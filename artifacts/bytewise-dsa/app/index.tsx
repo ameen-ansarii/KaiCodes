@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Feather } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import colors from '@/constants/colors';
 
@@ -22,6 +22,58 @@ type Tab = 'home' | 'topics' | 'profile';
 const theme = colors.light as Theme;
 const { width: windowWidth } = Dimensions.get('window');
 const isCompact = windowWidth < 380;
+
+const iconMap = {
+  star: 'star',
+  zap: 'lightning-bolt',
+  bell: 'bell-outline',
+  code: 'code-tags',
+  home: 'home',
+  compass: 'compass-outline',
+  user: 'account-outline',
+  'arrow-right': 'arrow-right',
+  'arrow-left': 'arrow-left',
+  x: 'close',
+  coffee: 'coffee',
+  sun: 'white-balance-sunny',
+  award: 'medal-outline',
+  check: 'check',
+  grid: 'view-grid-outline',
+  hash: 'pound',
+  move: 'cursor-move',
+  layers: 'layers',
+  'git-branch': 'source-branch',
+  'share-2': 'share-variant',
+  'arrow-up-right': 'arrow-top-right',
+  'bar-chart-2': 'chart-bar',
+  'chevron-right': 'chevron-right',
+  lock: 'lock-outline',
+  copy: 'content-copy',
+  'book-open': 'book-open-variant',
+  'chevron-up': 'chevron-up',
+  'chevron-down': 'chevron-down',
+  'check-circle': 'check-circle-outline',
+  'trending-up': 'trending-up',
+  search: 'magnify',
+  settings: 'cog-outline',
+} as const;
+type IconName = keyof typeof iconMap;
+
+function AppIcon({
+  name,
+  size = 20,
+  color = theme.ink,
+}: {
+  name: IconName;
+  size?: number;
+  color?: string;
+  fill?: string;
+  strokeWidth?: number;
+}) {
+  return <MaterialCommunityIcons name={iconMap[name]} size={size} color={color} />;
+}
+
+const Feather = AppIcon;
 
 const topics = [
   { name: 'Arrays', icon: 'grid' as const, color: theme.sky, progress: 0.72, count: '18 / 25' },
@@ -49,7 +101,7 @@ function StrongButton({
   onPress: () => void;
   color?: string;
   textColor?: string;
-  icon?: keyof typeof Feather.glyphMap;
+  icon?: IconName;
   secondary?: boolean;
   disabled?: boolean;
 }) {
@@ -84,7 +136,7 @@ function IconButton({
   backgroundColor = theme.card,
   color = theme.ink,
 }: {
-  icon: keyof typeof Feather.glyphMap;
+  icon: IconName;
   onPress?: () => void;
   backgroundColor?: string;
   color?: string;
@@ -163,7 +215,7 @@ function Mascot({ small = false }: { small?: boolean }) {
 }
 
 function BottomNav({ active, onChange }: { active: Tab; onChange: (tab: Tab) => void }) {
-  const items: Array<{ key: Tab; label: string; icon: keyof typeof Feather.glyphMap }> = [
+  const items: Array<{ key: Tab; label: string; icon: IconName }> = [
     { key: 'home', label: 'Today', icon: 'home' },
     { key: 'topics', label: 'Topics', icon: 'compass' },
     { key: 'profile', label: 'You', icon: 'user' },
