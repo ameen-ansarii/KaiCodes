@@ -1,0 +1,1 @@
+- [Bytewise visual direction](bytewise-visual-direction.md) — retain an original code-coach identity while borrowing high-level playful learning patterns from the researched reference.
