@@ -445,3 +445,183 @@ export async function getUserProgress(userId: string): Promise<UserProgress> {
 
   return defaultProgress;
 }
+
+export async function saveUserProgress(progress: UserProgress): Promise<boolean> {
+  if (isTursoConfigured) {
+    try {
+      await initTursoTables();
+      await executeTurso({
+        sql: `INSERT OR REPLACE INTO user_progress 
+              (user_id, xp, streak_count, last_active_date, completed_lessons, unlocked_nodes)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [
+          progress.userId,
+          progress.xp,
+          progress.streakCount,
+          progress.lastActiveDate,
+          JSON.stringify(progress.completedLessons),
+          JSON.stringify(progress.unlockedNodes),
+        ],
+      });
+    } catch (err) {
+      console.warn('Failed to save progress to Turso:', err);
+    }
+  }
+
+  try {
+    const raw = await AsyncStorage.getItem(PROGRESS_LOCAL_STORAGE_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    all[progress.userId] = progress;
+    await AsyncStorage.setItem(PROGRESS_LOCAL_STORAGE_KEY, JSON.stringify(all));
+    return true;
+  } catch (err) {
+    console.error('Failed to save progress locally:', err);
+    return false;
+  }
+}
+
+export async function recordLessonCompleted(
+  userId: string,
+  lessonId: string,
+  xpGained: number = 40
+): Promise<UserProgress> {
+  const current = await getUserProgress(userId);
+  const alreadyDone = current.completedLessons.includes(lessonId);
+  const now = new Date().toISOString().split('T')[0];
+
+  const updatedLessons = alreadyDone
+    ? current.completedLessons
+    : [...current.completedLessons, lessonId];
+
+  // Calculate streak increment if active today vs yesterday
+  let updatedStreak = current.streakCount;
+  if (current.lastActiveDate !== now) {
+    updatedStreak = (current.streakCount || 0) + 1;
+  }
+
+  const updatedProgress: UserProgress = {
+    ...current,
+    xp: current.xp + xpGained,
+    streakCount: updatedStreak,
+    lastActiveDate: now,
+    completedLessons: updatedLessons,
+  };
+
+  await saveUserProgress(updatedProgress);
+  return updatedProgress;
+}
+
+export interface LeaderboardRank {
+  rank: number;
+  userId: string;
+  name: string;
+  username: string;
+  xp: number;
+  streak: number;
+  avatarPose: string;
+  isUser: boolean;
+  badge?: string;
+}
+
+const DEFAULT_LEADERBOARD_SEED: LeaderboardRank[] = [
+  { rank: 1, userId: 'u_1', name: 'Priya Sharma', username: 'priya_code', xp: 2140, streak: 14, isUser: false, avatarPose: 'speedrun', badge: '🥇' },
+  { rank: 2, userId: 'u_2', name: 'Rohan Kumar', username: 'rohan_dev', xp: 1820, streak: 21, isUser: false, avatarPose: 'whisper', badge: '🥈' },
+  { rank: 3, userId: 'u_3', name: 'David Lee', username: 'david_algo', xp: 1490, streak: 8, isUser: false, avatarPose: 'coding', badge: '🥉' },
+  { rank: 4, userId: 'u_4', name: 'Sarah Chen', username: 'sarah_c', xp: 1110, streak: 12, isUser: false, avatarPose: 'eureka' },
+  { rank: 5, userId: 'u_5', name: 'Marcus Bell', username: 'marcus_b', xp: 950, streak: 5, isUser: false, avatarPose: 'coding' },
+  { rank: 6, userId: 'u_6', name: 'Ananya Mehta', username: 'ananya_m', xp: 820, streak: 9, isUser: false, avatarPose: 'speedrun' },
+  { rank: 7, userId: 'u_7', name: 'Liam Garcia', username: 'liam_g', xp: 710, streak: 4, isUser: false, avatarPose: 'whisper' },
+  { rank: 8, userId: 'u_8', name: 'Elena Rostova', username: 'elena_r', xp: 640, streak: 3, isUser: false, avatarPose: 'coding' },
+  { rank: 9, userId: 'u_9', name: 'Kenji Sato', username: 'kenji_s', xp: 580, streak: 6, isUser: false, avatarPose: 'eureka' },
+  { rank: 10, userId: 'u_10', name: 'Maya Patel', username: 'maya_p', xp: 420, streak: 2, isUser: false, avatarPose: 'facepalm' },
+];
+
+export async function getGlobalLeaderboard(currentUserId?: string): Promise<LeaderboardRank[]> {
+  if (isTursoConfigured) {
+    try {
+      await initTursoTables();
+      const res = await executeTurso(`
+        SELECT u.id, u.username, u.display_name, u.avatar_pose,
+               COALESCE(p.xp, 0) as xp,
+               COALESCE(p.streak_count, 1) as streak_count
+        FROM users u
+        LEFT JOIN user_progress p ON u.id = p.user_id
+        ORDER BY COALESCE(p.xp, 0) DESC
+        LIMIT 30
+      `);
+
+      if (res.rows && res.rows.length > 0) {
+        const liveUsers: LeaderboardRank[] = res.rows.map((row) => ({
+          rank: 0,
+          userId: String(row.id),
+          name: String(row.display_name || row.username || 'Coder'),
+          username: String(row.username || 'coder'),
+          xp: Number(row.xp || 0),
+          streak: Number(row.streak_count || 1),
+          avatarPose: String(row.avatar_pose || 'accepted'),
+          isUser: row.id === currentUserId,
+        }));
+
+        // If fewer than 8 live users, fill with mock classmates so the league stays engaging
+        let pool = [...liveUsers];
+        if (pool.length < 8) {
+          const liveUserIds = new Set(pool.map((u) => u.userId));
+          for (const seed of DEFAULT_LEADERBOARD_SEED) {
+            if (!liveUserIds.has(seed.userId)) {
+              pool.push({ ...seed });
+            }
+          }
+        }
+
+        // Sort by XP descending
+        pool.sort((a, b) => b.xp - a.xp);
+
+        // Assign rank numbers and medals
+        return pool.map((item, idx) => {
+          const rank = idx + 1;
+          let badge: string | undefined = undefined;
+          if (rank === 1) badge = '🥇';
+          else if (rank === 2) badge = '🥈';
+          else if (rank === 3) badge = '🥉';
+          else if (item.isUser) badge = '🚀';
+
+          return {
+            ...item,
+            rank,
+            badge,
+          };
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to load live leaderboard from Turso:', err);
+    }
+  }
+
+  // Fallback to local user + seeds
+  let pool = [...DEFAULT_LEADERBOARD_SEED];
+  if (currentUserId) {
+    try {
+      const userProgress = await getUserProgress(currentUserId);
+      const userSession = await getStoredSession();
+      if (userSession) {
+        pool.push({
+          rank: 0,
+          userId: currentUserId,
+          name: `${userSession.displayName} (You)`,
+          username: userSession.username,
+          xp: userProgress.xp,
+          streak: userProgress.streakCount,
+          avatarPose: userSession.avatarPose || 'accepted',
+          isUser: true,
+        });
+      }
+    } catch (_) {}
+  }
+
+  pool.sort((a, b) => b.xp - a.xp);
+  return pool.map((item, idx) => ({
+    ...item,
+    rank: idx + 1,
+    badge: idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : item.isUser ? '🚀' : undefined,
+  }));
+}

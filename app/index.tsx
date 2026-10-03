@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Animated,
   Dimensions,
   Image,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,8 +16,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import colors from '@/constants/colors';
-import { getAllSubjects, getSubjectById, getLessonById } from '@/content';
-import { SubjectId } from '@/types/content';
+import { getAllSubjects, getSubjectById, getAllTopics, getTopicById, getLessonById } from '@/content';
+import { SubjectId, LessonContent } from '@/types/content';
 import { SubjectPicker } from '@/components/SubjectPicker';
 import { FlowchartCard } from '@/components/FlowchartCard';
 import { TheoryCard } from '@/components/TheoryCard';
@@ -26,8 +27,13 @@ import {
   getStoredSession,
   saveSession,
   getUserProfile,
+  getUserProgress,
+  recordLessonCompleted,
+  getGlobalLeaderboard,
+  LeaderboardRank,
   UserAccount,
   UserProfile,
+  UserProgress,
 } from '@/services/turso';
 
 type Theme = typeof colors.light;
@@ -299,14 +305,22 @@ function LogoLockup({ compact = false, showTitle = true, title }: { compact?: bo
   );
 }
 
-function HeaderStats({ onProfile }: { onProfile: () => void }) {
+function HeaderStats({
+  onProfile,
+  xp = 0,
+  streak = 1,
+}: {
+  onProfile: () => void;
+  xp?: number;
+  streak?: number;
+}) {
   return (
     <View style={styles.headerStats}>
       <LogoLockup compact showTitle />
       <View style={{ flex: 1 }} />
       <View style={styles.statPill}>
         <Feather name="star" size={15} color={theme.yellowDark} fill={theme.yellowDark} />
-        <Text style={styles.statValue}>1,240</Text>
+        <Text style={styles.statValue}>{xp.toLocaleString()}</Text>
       </View>
       <View style={styles.statPill}>
         <Image
@@ -314,7 +328,7 @@ function HeaderStats({ onProfile }: { onProfile: () => void }) {
           style={{ width: 17, height: 17 }}
           resizeMode="contain"
         />
-        <Text style={styles.statValue}>7</Text>
+        <Text style={styles.statValue}>{streak}</Text>
       </View>
       <Pressable onPress={onProfile} style={styles.bellButton}>
         <Feather name="bell" size={17} color={theme.ink} strokeWidth={2.5} />
@@ -428,18 +442,21 @@ function ScreenShell({
   children,
   scroll = true,
   bottomNav,
+  refreshControl,
 }: {
   children: React.ReactNode;
   scroll?: boolean;
   bottomNav?: boolean;
   onNav?: (tab: Tab) => void;
   activeTab?: Tab;
+  refreshControl?: React.ReactElement<any>;
 }) {
   const insets = useSafeAreaInsets();
   const content = scroll ? (
     <ScrollView
       contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16, paddingBottom: bottomNav ? 112 : insets.bottom + 32 }]}
       showsVerticalScrollIndicator={false}
+      refreshControl={refreshControl}
     >
       {children}
     </ScrollView>
@@ -533,6 +550,7 @@ function Goals({ onContinue }: { onContinue: () => void }) {
 function Home({
   user,
   profile,
+  progress,
   onPractice,
   onTopics,
   onCourse,
@@ -543,7 +561,8 @@ function Home({
 }: {
   user?: UserAccount | null;
   profile?: UserProfile | null;
-  onPractice: () => void;
+  progress?: UserProgress;
+  onPractice: (lessonId?: string) => void;
   onTopics: () => void;
   onCourse: () => void;
   onProfile: () => void;
@@ -551,57 +570,103 @@ function Home({
   onLeaderboard: () => void;
   onNav: (tab: Tab) => void;
 }) {
+  const nextLesson = useMemo(() => {
+    const all = getAllTopics().flatMap((t) => t.lessons);
+    return all.find((l) => !progress?.completedLessons.includes(l.id)) || all[0];
+  }, [progress]);
+
+  const streak = progress?.streakCount || 1;
+  const repsCompleted = progress?.completedLessons.length || 0;
+
   return (
     <ScreenShell bottomNav activeTab="home">
-      <HeaderStats onProfile={onProfile} />
+      <HeaderStats onProfile={onProfile} xp={progress?.xp || 0} streak={streak} />
       <View style={styles.greetingBanner}>
         <View style={styles.greetingCopy}>
-          <Text style={styles.greeting}>Good morning, {user?.displayName || 'Alex'}</Text>
-          <Text style={styles.greetingSub}>Keep your 7-day streak alive today!</Text>
+          <Text style={styles.greeting}>Good morning, {user?.displayName || 'Engineer'}</Text>
+          <Text style={styles.greetingSub}>Keep your {streak}-day streak alive today!</Text>
           <View style={styles.streakBadgeInline}>
             <Image
               source={require('@/assets/images/streak_emoji.png')}
               style={{ width: 19, height: 19 }}
               resizeMode="contain"
             />
-            <Text style={styles.streakNumberInline}>7-DAY STREAK</Text>
+            <Text style={styles.streakNumberInline}>{streak}-DAY STREAK</Text>
           </View>
         </View>
         <Mascot pose="speedrun" size={118} style={{ marginBottom: -8 }} />
       </View>
       <View style={styles.dailyCard}>
         <View style={styles.dailyCardTop}>
-          <View style={styles.tag}><Text style={styles.tagText}>TODAY’S REP</Text></View>
-          <Text style={styles.dailyMinutes}>~ 8 MIN</Text>
+          <View style={styles.tag}>
+            <Text style={styles.tagText}>TODAY’S REP</Text>
+          </View>
+          <Text style={styles.dailyMinutes}>~ {nextLesson.estimatedMinutes} MIN</Text>
         </View>
-        <Text style={styles.dailyTitle}>Two Sum</Text>
-        <Text style={styles.dailyDescription}>Find two numbers that add up to a target. A classic warm-up for your problem-solving muscles.</Text>
+        <Text style={styles.dailyTitle}>{nextLesson.title}</Text>
+        <Text style={styles.dailyDescription}>{nextLesson.subtitle}</Text>
         <View style={styles.dailyMetaRow}>
-          <View style={styles.metaItem}><Feather name="bar-chart-2" size={16} color={theme.sky} /><Text style={styles.metaText}>Easy</Text></View>
-          <View style={styles.metaItem}><Feather name="layers" size={16} color={theme.sky} /><Text style={styles.metaText}>Arrays</Text></View>
-          <View style={styles.xpChip}><Text style={styles.xpChipText}>+40 XP</Text></View>
+          <View style={styles.metaItem}>
+            <Feather name="bar-chart-2" size={16} color={theme.sky} />
+            <Text style={styles.metaText}>{nextLesson.difficulty}</Text>
+          </View>
+          <View style={styles.metaItem}>
+            <Feather name="layers" size={16} color={theme.sky} />
+            <Text style={styles.metaText}>{nextLesson.topicId.split('-')[0].toUpperCase()}</Text>
+          </View>
+          <View style={styles.xpChip}>
+            <Text style={styles.xpChipText}>+40 XP</Text>
+          </View>
         </View>
-        <StrongButton label="Solve today’s problem" onPress={onPractice} color={theme.purple} icon="arrow-up-right" />
+        <StrongButton
+          label="Solve today’s problem"
+          onPress={() => onPractice(nextLesson.id)}
+          color={theme.purple}
+          icon="arrow-up-right"
+        />
       </View>
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Your momentum</Text>
-        <Pressable onPress={onPaywall}><Text style={styles.seeAll}>See insights <Feather name="chevron-right" size={14} color={theme.sky} /></Text></Pressable>
+        <Pressable onPress={onPaywall}>
+          <Text style={styles.seeAll}>
+            See insights <Feather name="chevron-right" size={14} color={theme.sky} />
+          </Text>
+        </Pressable>
       </View>
       <View style={styles.momentumCard}>
-        <View style={styles.momentumNumber}><Text style={styles.momentumBig}>4</Text><Text style={styles.momentumUnit}>/ 7</Text><Text style={styles.momentumCaption}>reps this week</Text></View>
+        <View style={styles.momentumNumber}>
+          <Text style={styles.momentumBig}>{Math.min(7, repsCompleted)}</Text>
+          <Text style={styles.momentumUnit}>/ 7</Text>
+          <Text style={styles.momentumCaption}>reps this week</Text>
+        </View>
         <View style={styles.weekBars}>
           {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => (
             <View key={`${day}-${index}`} style={styles.weekDay}>
-              <View style={[styles.weekBarTrack, index < 4 && styles.weekBarDone, index === 3 && styles.weekBarToday]} />
-              <Text style={[styles.weekDayText, index === 3 && styles.weekDayToday]}>{day}</Text>
+              <View
+                style={[
+                  styles.weekBarTrack,
+                  index < Math.min(7, repsCompleted) && styles.weekBarDone,
+                  index === Math.min(6, repsCompleted) && styles.weekBarToday,
+                ]}
+              />
+              <Text style={[styles.weekDayText, index === Math.min(6, repsCompleted) && styles.weekDayToday]}>
+                {day}
+              </Text>
             </View>
           ))}
         </View>
       </View>
       <View style={styles.unlockRow}>
-        <View style={styles.unlockIcon}><Feather name="lock" size={16} color={theme.purpleDark} /></View>
-        <View style={{ flex: 1 }}><Text style={styles.unlockTitle}>Unlock personalized insights</Text><Text style={styles.unlockSub}>See where your patterns are getting stronger.</Text></View>
-        <Pressable onPress={onPaywall}><Feather name="chevron-right" size={18} color={theme.purpleDark} /></Pressable>
+        <View style={styles.unlockIcon}>
+          <Feather name="lock" size={16} color={theme.purpleDark} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.unlockTitle}>Unlock personalized insights</Text>
+          <Text style={styles.unlockSub}>See where your patterns are getting stronger.</Text>
+        </View>
+        <Pressable onPress={onPaywall}>
+          <Feather name="chevron-right" size={18} color={theme.purpleDark} />
+        </Pressable>
       </View>
     </ScreenShell>
   );
@@ -738,19 +803,66 @@ function CodeShowcaseCard({
   );
 }
 
-function Practice({ onComplete, onBack }: { onComplete: () => void; onBack: () => void }) {
+function Practice({
+  lessonId = 'two-sum',
+  onComplete,
+  onBack,
+}: {
+  lessonId?: string;
+  onComplete: (rewardXp: number) => void;
+  onBack: () => void;
+}) {
   const insets = useSafeAreaInsets();
   const [viewMode, setViewMode] = useState<'code' | 'flowchart' | 'theory'>('code');
   const [showExplanation, setShowExplanation] = useState(false);
-  const [code, setCode] = useState(`function twoSum(nums, target) {\n  const seen = new Map();\n\n  for (let i = 0; i < nums.length; i++) {\n    const complement = target - nums[i];\n    if (seen.has(complement)) {\n      return [seen.get(complement), i];\n    }\n    seen.set(nums[i], i);\n  }\n}`);
-  const lesson = getLessonById('two-sum');
+  const [selectedLang, setSelectedLang] = useState<'python' | 'cpp' | 'java' | 'typescript'>('python');
+  const [selectedQuizOption, setSelectedQuizOption] = useState<number | null>(null);
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
+
+  const lesson = useMemo(() => {
+    return getLessonById(lessonId) || getLessonById('two-sum')!;
+  }, [lessonId]);
+
+  const currentImpl = useMemo(() => {
+    return (
+      lesson.implementations.find((impl) => impl.language === selectedLang) ||
+      lesson.implementations[0]
+    );
+  }, [lesson, selectedLang]);
+
+  const [code, setCode] = useState(currentImpl?.code || '');
+
+  useEffect(() => {
+    if (currentImpl) {
+      setCode(currentImpl.code);
+    }
+  }, [currentImpl]);
+
+  const checkpoint = lesson.checkpoint;
+  const isQuizCorrect = selectedQuizOption === checkpoint?.correctIndex;
+
+  const handleSelectOption = (idx: number) => {
+    tapFeedback();
+    setSelectedQuizOption(idx);
+    setQuizSubmitted(true);
+    if (idx === checkpoint?.correctIndex) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } else {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  };
 
   return (
     <View style={styles.screen}>
       <View style={[styles.practiceFixedHeader, { paddingTop: insets.top + 16 }]}>
         <IconButton icon="x" onPress={onBack} />
-        <View style={styles.practiceProgressWrap}><Text style={styles.practiceProgressText}>LESSON 3 OF 6</Text><ProgressBar value={0.5} color={theme.yellow} height={8} /></View>
-        <View style={styles.xpTiny}><Text style={styles.xpTinyText}>+40 XP</Text></View>
+        <View style={styles.practiceProgressWrap}>
+          <Text style={styles.practiceProgressText}>{lesson.difficulty.toUpperCase()} PATTERN</Text>
+          <ProgressBar value={quizSubmitted && isQuizCorrect ? 1.0 : 0.6} color={theme.yellow} height={8} />
+        </View>
+        <View style={styles.xpTiny}>
+          <Text style={styles.xpTinyText}>+40 XP</Text>
+        </View>
       </View>
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -758,14 +870,22 @@ function Practice({ onComplete, onBack }: { onComplete: () => void; onBack: () =
         contentContainerStyle={styles.practiceScrollContent}
       >
         <View style={styles.lessonContextRow}>
-          <View style={styles.lessonContextIcon}><Feather name="layers" size={16} color={theme.skyDark} /></View>
-          <View><Text style={styles.lessonContextTitle}>Arrays · Foundations</Text><Text style={styles.lessonContextSub}>Learn the pattern, then use it.</Text></View>
+          <View style={styles.lessonContextIcon}>
+            <Feather name="layers" size={16} color={theme.skyDark} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.lessonContextTitle}>{lesson.title}</Text>
+            <Text style={styles.lessonContextSub}>{lesson.subtitle}</Text>
+          </View>
         </View>
 
         <View style={styles.problemIntro}>
-          <View style={styles.problemTagRow}><Text style={styles.problemTag}>ARRAYS</Text><Text style={styles.problemDifficulty}>EASY</Text></View>
-          <Text style={styles.problemTitle}>Two Sum</Text>
-          <Text style={styles.problemPrompt}>Given an array of integers and a target, return the indices of the two numbers that add up to the target.</Text>
+          <View style={styles.problemTagRow}>
+            <Text style={styles.problemTag}>{lesson.topicId.toUpperCase()}</Text>
+            <Text style={styles.problemDifficulty}>{lesson.difficulty.toUpperCase()}</Text>
+          </View>
+          <Text style={styles.problemTitle}>{lesson.title}</Text>
+          <Text style={styles.problemPrompt}>{lesson.theory.overview}</Text>
         </View>
 
         <View style={styles.segmentContainer}>
@@ -816,29 +936,39 @@ function Practice({ onComplete, onBack }: { onComplete: () => void; onBack: () =
               <View style={styles.coachSpeechBubble}>
                 <View style={styles.speechTail} />
                 <Text style={styles.speechBubbleTitle}>Kai's Secret Key Pattern</Text>
-                <Text style={styles.speechBubbleBody}>A complement lookup turns a nested O(n²) loop into an ultra-fast O(n) one-pass solution!</Text>
+                <Text style={styles.speechBubbleBody}>{lesson.kaiTip}</Text>
               </View>
             </View>
-            <View style={styles.exampleCard}>
-              <View style={styles.exampleItem}>
-                <Text style={styles.exampleLabel}>INPUT</Text>
-                <Text style={styles.exampleValue}>nums = [2, 7, 11, 15]</Text>
-              </View>
-              <View style={styles.exampleDivider} />
-              <View style={styles.exampleItem}>
-                <Text style={styles.exampleLabel}>TARGET</Text>
-                <Text style={styles.exampleValue}>target = 9</Text>
-              </View>
-              <View style={styles.exampleDivider} />
-              <View style={styles.exampleItem}>
-                <Text style={styles.exampleLabel}>OUTPUT</Text>
-                <Text style={styles.exampleValue}>[0, 1]</Text>
-              </View>
+
+            <View style={styles.langSelectorRow}>
+              {(['python', 'cpp', 'java', 'typescript'] as const).map((lang) => {
+                const isSelected = selectedLang === lang;
+                const label =
+                  lang === 'python' ? 'Python' : lang === 'cpp' ? 'C++' : lang === 'java' ? 'Java' : 'TypeScript';
+                return (
+                  <Pressable
+                    key={lang}
+                    onPress={() => {
+                      tapFeedback();
+                      setSelectedLang(lang);
+                    }}
+                    style={[styles.langPill, isSelected && styles.langPillActive]}
+                  >
+                    <Text style={[styles.langPillText, isSelected && styles.langPillTextActive]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
+
             <CodeShowcaseCard code={code} onChangeCode={setCode} />
+
             <Pressable onPress={() => setShowExplanation((value) => !value)} style={styles.explanationToggle}>
-              <View style={styles.explanationIcon}><Feather name="book-open" size={17} color={theme.mintDark} /></View>
-              <Text style={styles.explanationText}>{showExplanation ? 'Hide explanation' : 'Need a hint? View explanation'}</Text>
+              <View style={styles.explanationIcon}>
+                <Feather name="book-open" size={17} color={theme.mintDark} />
+              </View>
+              <Text style={styles.explanationText}>
+                {showExplanation ? 'Hide explanation' : 'Need a hint? View explanation'}
+              </Text>
               <Feather name={showExplanation ? 'chevron-up' : 'chevron-down'} size={17} color={theme.mintDark} />
             </Pressable>
             {showExplanation ? (
@@ -847,69 +977,151 @@ function Practice({ onComplete, onBack }: { onComplete: () => void; onBack: () =
                   <Mascot pose="eureka" size={80} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.explanationTitle}>Kai's Eureka Breakdown</Text>
-                    <Text style={styles.explanationBody}>As you scan each number, ask: “Have I already seen its complement?” A Map makes that lookup constant time, so the whole solution stays O(n).</Text>
+                    <Text style={styles.explanationBody}>{currentImpl?.explanation || lesson.theory.mentalModel}</Text>
                   </View>
                 </View>
               </View>
             ) : null}
-            <View style={styles.trapWarningBox}>
-              <Mascot pose="facepalm" size={62} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.trapWarningTitle}>Kai's Anti-Pattern Alert</Text>
-                <Text style={styles.trapWarningBody}>Watch out: A nested brute-force loop pushes time complexity to O(n²), triggering Time Limit Exceeded (TLE) on large test cases.</Text>
+
+            <View style={styles.complexityRow}>
+              <View style={styles.complexityItem}>
+                <Text style={styles.complexityLabel}>TIME</Text>
+                <Text style={styles.complexityValue}>{lesson.complexity.time}</Text>
+              </View>
+              <View style={styles.complexityDivider} />
+              <View style={styles.complexityItem}>
+                <Text style={styles.complexityLabel}>SPACE</Text>
+                <Text style={styles.complexityValue}>{lesson.complexity.space}</Text>
+              </View>
+              <View style={styles.complexityDivider} />
+              <View style={styles.complexityItem}>
+                <Text style={styles.complexityLabel}>ESTIMATED</Text>
+                <Text style={styles.complexityValue}>~{lesson.estimatedMinutes}m</Text>
               </View>
             </View>
-            <View style={styles.complexityRow}>
-              <View style={styles.complexityItem}><Text style={styles.complexityLabel}>TIME</Text><Text style={styles.complexityValue}>O(n)</Text></View>
-              <View style={styles.complexityDivider} />
-              <View style={styles.complexityItem}><Text style={styles.complexityLabel}>SPACE</Text><Text style={styles.complexityValue}>O(n)</Text></View>
-              <View style={styles.complexityDivider} />
-              <View style={styles.complexityItem}><Text style={styles.complexityLabel}>PATTERN</Text><Text style={styles.complexityValue}>Hash map</Text></View>
-            </View>
-            <Text style={styles.editorFooter}>Your code is saved automatically</Text>
+
+            {checkpoint ? (
+              <View style={styles.quizCard}>
+                <View style={styles.quizHeaderRow}>
+                  <View style={styles.quizBadge}>
+                    <Text style={styles.quizBadgeText}>CHECKPOINT DRILL</Text>
+                  </View>
+                  <Text style={{ fontFamily: 'Inter_500Medium', fontSize: 11, color: '#64748B' }}>
+                    Active Recall Challenge
+                  </Text>
+                </View>
+                <Text style={styles.quizQuestion}>{checkpoint.question}</Text>
+                <View style={{ gap: 8 }}>
+                  {checkpoint.options.map((option, idx) => {
+                    const isSelected = selectedQuizOption === idx;
+                    const isAnswerCorrect = idx === checkpoint.correctIndex;
+                    let optionStyle = styles.quizOptionBtn;
+                    if (quizSubmitted) {
+                      if (isAnswerCorrect) optionStyle = [styles.quizOptionBtn, styles.quizOptionCorrect] as any;
+                      else if (isSelected) optionStyle = [styles.quizOptionBtn, styles.quizOptionWrong] as any;
+                    }
+
+                    return (
+                      <Pressable key={idx} onPress={() => handleSelectOption(idx)} style={optionStyle}>
+                        <View style={styles.quizOptionIndex}>
+                          <Text style={styles.quizOptionIndexText}>{String.fromCharCode(65 + idx)}</Text>
+                        </View>
+                        <Text style={styles.quizOptionText}>{option}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {quizSubmitted && (
+                  <View style={styles.quizFeedbackBox}>
+                    <Mascot pose={isQuizCorrect ? 'accepted' : 'frustrated'} size={48} />
+                    <Text style={styles.quizFeedbackText}>
+                      {isQuizCorrect ? checkpoint.kaiAcceptedQuote : checkpoint.kaiFrustratedQuote}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            ) : null}
           </>
         )}
       </ScrollView>
       <View style={[styles.practiceActionBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-        <StrongButton label="Check solution" onPress={onComplete} color={theme.purple} icon="check-circle" />
+        <StrongButton
+          label={quizSubmitted && isQuizCorrect ? 'Claim +40 XP & Complete' : 'Finish Rep'}
+          onPress={() => onComplete(40)}
+          color={theme.purple}
+          icon="check-circle"
+        />
       </View>
     </View>
   );
 }
 
 function CoursePath({
-  topic,
+  topic: topicTitle,
+  progress,
   onBack,
   onPractice,
   onNav,
 }: {
   topic: string;
+  progress?: UserProgress;
   onBack: () => void;
-  onPractice: () => void;
+  onPractice: (lessonId?: string) => void;
   onNav?: (tab: Tab) => void;
 }) {
-  const lessons = [
-    { type: 'THEORY', title: 'What makes an array useful?', detail: 'Indexing, iteration, and the cost of a lookup.', icon: 'book-open' as IconName, color: theme.sky, status: 'done' },
-    { type: 'PATTERN', title: 'Complement lookup', detail: 'Turn Two Sum into your first hash map win.', icon: 'layers' as IconName, color: theme.purple, status: 'current' },
-    { type: 'GUIDED', title: 'Walk through Two Sum', detail: 'Trace the map one number at a time.', icon: 'trending-up' as IconName, color: theme.yellowDark, status: 'locked' },
-    { type: 'EXERCISE', title: 'Pair with a target', detail: 'A fresh variation to make it stick.', icon: 'check-circle' as IconName, color: theme.purple, status: 'locked' },
-    { type: 'CHALLENGE', title: 'Pattern checkpoint', detail: 'Mix arrays and maps in one final rep.', icon: 'award' as IconName, color: theme.purpleDark, status: 'locked' },
-  ];
+  const allTopics = getAllTopics();
+  const currentTopic = useMemo(() => {
+    return (
+      allTopics.find(
+        (t) =>
+          t.title.toLowerCase() === topicTitle.toLowerCase() ||
+          t.id === topicTitle ||
+          t.title.toLowerCase().includes(topicTitle.toLowerCase())
+      ) || allTopics[0]
+    );
+  }, [allTopics, topicTitle]);
+
+  const lessons = currentTopic.lessons;
+  const completedCount = lessons.filter((l) => progress?.completedLessons.includes(l.id)).length;
+  const pctComplete = Math.round((completedCount / Math.max(1, lessons.length)) * 100);
+
   return (
     <ScreenShell bottomNav={!!onNav} onNav={onNav} activeTab="course">
-      <View style={styles.courseTop}><IconButton icon="arrow-left" onPress={onBack} /><Text style={styles.courseTopLabel}>COURSE MAP</Text><View style={{ width: 44 }} /></View>
-      <View style={styles.courseHero}>
-        <View style={styles.courseHeroIcon}><Feather name="layers" size={27} color={theme.card} /></View>
-        <View style={{ flex: 1 }}><Text style={styles.courseEyebrow}>CURRENT COURSE</Text><Text style={styles.courseTitle}>{topic}</Text><Text style={styles.courseSub}>Foundations · 5 lessons</Text></View>
-        <View style={styles.courseProgress}><Text style={styles.courseProgressNumber}>1</Text><Text style={styles.courseProgressLabel}>/ 5</Text></View>
+      <View style={styles.courseTop}>
+        <IconButton icon="arrow-left" onPress={onBack} />
+        <Text style={styles.courseTopLabel}>COURSE MAP</Text>
+        <View style={{ width: 44 }} />
       </View>
-      <View style={styles.courseTabs}><View style={styles.courseTabActive}><Text style={styles.courseTabActiveText}>Learn</Text></View><View style={styles.courseTab}><Text style={styles.courseTabText}>Exercises</Text></View><View style={styles.courseTab}><Text style={styles.courseTabText}>Notes</Text></View></View>
-      <View style={styles.courseSectionHeader}><View><Text style={styles.sectionTitle}>Your learning path</Text><Text style={styles.courseSectionSub}>One idea at a time, then a rep.</Text></View><Text style={styles.topicCount}>20% complete</Text></View>
+      <View style={styles.courseHero}>
+        <View style={[styles.courseHeroIcon, { backgroundColor: currentTopic.accentColor }]}>
+          <Feather name={currentTopic.icon as any} size={27} color={theme.card} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.courseEyebrow}>ACTIVE COURSE</Text>
+          <Text style={styles.courseTitle}>{currentTopic.title}</Text>
+          <Text style={styles.courseSub}>{currentTopic.description}</Text>
+        </View>
+        <View style={styles.courseProgress}>
+          <Text style={styles.courseProgressNumber}>{completedCount}</Text>
+          <Text style={styles.courseProgressLabel}>/ {lessons.length}</Text>
+        </View>
+      </View>
+
+      <View style={styles.courseSectionHeader}>
+        <View>
+          <Text style={styles.sectionTitle}>Your learning path</Text>
+          <Text style={styles.courseSectionSub}>Master one pattern at a time.</Text>
+        </View>
+        <Text style={styles.topicCount}>{pctComplete}% complete</Text>
+      </View>
       <View style={styles.windingPathContainer}>
         {lessons.map((lesson, index) => {
-          const locked = lesson.status === 'locked';
-          const isDone = lesson.status === 'done';
-          const isCurrent = lesson.status === 'current';
+          const isDone = progress?.completedLessons.includes(lesson.id);
+          const isPrevDone = index === 0 || progress?.completedLessons.includes(lessons[index - 1].id);
+          const isCurrent = !isDone && isPrevDone;
+          const locked = !isDone && !isCurrent;
+
           const offsets = [0, 48, 0, -48, 0];
           const xOffset = offsets[index % offsets.length];
 
@@ -926,7 +1138,7 @@ function CoursePath({
             : '#CBD5E1';
 
           return (
-            <View key={lesson.title} style={[styles.windingNodeRow, { transform: [{ translateX: xOffset }] }]}>
+            <View key={lesson.id} style={[styles.windingNodeRow, { transform: [{ translateX: xOffset }] }]}>
               {index < lessons.length - 1 ? (
                 <View style={[styles.windingConnector, isDone && styles.windingConnectorDone]} />
               ) : null}
@@ -949,7 +1161,7 @@ function CoursePath({
                   disabled={locked}
                   onPress={() => {
                     tapFeedback();
-                    onPractice();
+                    onPractice(lesson.id);
                   }}
                   style={({ pressed }) => [
                     styles.windingNode,
@@ -976,19 +1188,32 @@ function CoursePath({
                   {lesson.title}
                 </Text>
                 <Text style={styles.windingNodeDetail}>
-                  {lesson.type} · {lesson.detail}
+                  {lesson.difficulty} · ~{lesson.estimatedMinutes}m
                 </Text>
               </View>
             </View>
           );
         })}
       </View>
-      <View style={styles.courseCallout}><View style={styles.courseCalloutIcon}><Feather name="star" size={16} color={theme.yellowDark} /></View><Text style={styles.courseCalloutText}>Complete the next lesson to keep your 7-day streak alive with Kai.</Text></View>
+      <View style={styles.courseCallout}>
+        <View style={styles.courseCalloutIcon}>
+          <Feather name="star" size={16} color={theme.yellowDark} />
+        </View>
+        <Text style={styles.courseCalloutText}>
+          Complete reps daily to build interview muscle memory with Kai.
+        </Text>
+      </View>
     </ScreenShell>
   );
 }
 
-function Reward({ onContinue }: { onContinue: () => void }) {
+function Reward({
+  onContinue,
+  streak = 1,
+}: {
+  onContinue: () => void;
+  streak?: number;
+}) {
   const scale = useRef(new Animated.Value(0.6)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -1012,7 +1237,7 @@ function Reward({ onContinue }: { onContinue: () => void }) {
           <View style={styles.rewardStats}>
             <View style={styles.rewardStat}><Text style={styles.rewardStatValue}>+40</Text><Text style={styles.rewardStatLabel}>XP EARNED</Text></View>
             <View style={styles.rewardDivider} />
-            <View style={styles.rewardStat}><Text style={styles.rewardStatValue}>7</Text><Text style={styles.rewardStatLabel}>DAY STREAK</Text></View>
+            <View style={styles.rewardStat}><Text style={styles.rewardStatValue}>{streak}</Text><Text style={styles.rewardStatLabel}>DAY STREAK</Text></View>
           </View>
           <View style={styles.streakCallout}>
             <Image
@@ -1098,25 +1323,41 @@ function Leaderboard({
   onNav: (tab: Tab) => void;
   onPractice: () => void;
 }) {
-  const userName = user?.displayName ? `${user.displayName} (You)` : 'Alex Morgan (You)';
-  const userPose = (user?.avatarPose as any) || 'accepted';
-  const ranks = [
-    { rank: 1, name: 'Priya Sharma', xp: 2140, streak: 14, isUser: false, avatarPose: 'speedrun' as const, badge: '🥇' },
-    { rank: 2, name: 'Rohan Kumar', xp: 1820, streak: 21, isUser: false, avatarPose: 'whisper' as const, badge: '🥈' },
-    { rank: 3, name: 'David Lee', xp: 1490, streak: 8, isUser: false, avatarPose: 'coding' as const, badge: '🥉' },
-    { rank: 4, name: userName, xp: 1240, streak: 7, isUser: true, avatarPose: userPose, badge: '🚀' },
-    { rank: 5, name: 'Sarah Chen', xp: 1110, streak: 12, isUser: false, avatarPose: 'eureka' as const },
-    { rank: 6, name: 'Marcus Bell', xp: 950, streak: 5, isUser: false, avatarPose: 'coding' as const },
-    { rank: 7, name: 'Ananya Mehta', xp: 820, streak: 9, isUser: false, avatarPose: 'speedrun' as const },
-    { rank: 8, name: 'Liam Garcia', xp: 710, streak: 4, isUser: false, avatarPose: 'whisper' as const },
-    { rank: 9, name: 'Elena Rostova', xp: 640, streak: 3, isUser: false, avatarPose: 'coding' as const },
-    { rank: 10, name: 'Kenji Sato', xp: 580, streak: 6, isUser: false, avatarPose: 'eureka' as const },
-    { rank: 11, name: 'Maya Patel', xp: 420, streak: 2, isUser: false, avatarPose: 'facepalm' as const },
-    { rank: 12, name: 'Jordan Hayes', xp: 350, streak: 1, isUser: false, avatarPose: 'whisper' as const },
-  ];
+  const [ranks, setRanks] = useState<LeaderboardRank[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchRanks = useCallback(async () => {
+    try {
+      const data = await getGlobalLeaderboard(user?.id);
+      setRanks(data);
+    } catch (err) {
+      console.warn('Leaderboard load error:', err);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchRanks();
+  }, [fetchRanks]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchRanks();
+    setRefreshing(false);
+  };
+
+  const userRankItem = ranks.find((r) => r.isUser);
+  const userRank = userRankItem?.rank || 4;
+  const userXp = userRankItem?.xp || 0;
+  const targetAbove = ranks.find((r) => r.rank === userRank - 1);
+  const diffXp = targetAbove ? Math.max(10, targetAbove.xp - userXp + 10) : 0;
 
   return (
-    <ScreenShell bottomNav onNav={onNav} activeTab="leaderboard">
+    <ScreenShell
+      bottomNav
+      onNav={onNav}
+      activeTab="leaderboard"
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#7C3AED']} />}
+    >
       <View style={styles.leagueHeroCard}>
         <View style={styles.leagueHeroTop}>
           <View style={styles.leagueBadgeWrap}>
@@ -1125,19 +1366,28 @@ function Leaderboard({
           <View style={{ flex: 1 }}>
             <View style={styles.leagueTimerRow}>
               <Feather name={'clock' as any} size={13} color="#DDD6FE" />
-              <Text style={styles.leagueTimerText}>2d 14h left this week</Text>
+              <Text style={styles.leagueTimerText}>Live Weekly League</Text>
             </View>
             <Text style={styles.leagueTitle}>Obsidian League</Text>
           </View>
+          <Pressable onPress={onRefresh} style={styles.refreshBtn} accessibilityLabel="Refresh rankings">
+            <Feather name="trending-up" size={18} color="#7C3AED" />
+          </Pressable>
         </View>
         <Text style={styles.leagueSubtitle}>Top 10 engineers promote to Diamond League on Sunday.</Text>
       </View>
 
       <View style={styles.userRankBanner}>
-        <Mascot pose="accepted" size={54} />
+        <Mascot pose={(user?.avatarPose as any) || 'accepted'} size={54} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.userRankHeading}>You're #4 in Promotion Zone!</Text>
-          <Text style={styles.userRankSub}>250 XP behind #3 David Lee. Solve 1 rep to climb.</Text>
+          <Text style={styles.userRankHeading}>
+            {userRank <= 10 ? `You're #${userRank} in Promotion Zone!` : `You're #${userRank} in Obsidian League`}
+          </Text>
+          <Text style={styles.userRankSub}>
+            {targetAbove
+              ? `${diffXp} XP behind #${userRank - 1} ${targetAbove.name}. Solve 1 rep to climb.`
+              : `You're leading the league! Keep practicing to stay #1.`}
+          </Text>
         </View>
         <Pressable onPress={onPractice} style={styles.climbBtn}>
           <Text style={styles.climbBtnText}>Solve</Text>
@@ -1147,7 +1397,7 @@ function Leaderboard({
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Weekly Standings</Text>
-        <Text style={styles.topicCount}>30 Engineers</Text>
+        <Text style={styles.topicCount}>{ranks.length} Engineers</Text>
       </View>
 
       <View style={styles.leaderboardList}>
@@ -1185,7 +1435,7 @@ function Leaderboard({
                 </View>
 
                 <View style={styles.rankAvatar}>
-                  <Mascot pose={item.avatarPose} size={36} />
+                  <Mascot pose={(item.avatarPose as any) || 'accepted'} size={36} />
                 </View>
 
                 <View style={{ flex: 1 }}>
@@ -1223,16 +1473,24 @@ function Leaderboard({
 function Profile({
   user,
   profile,
+  progress,
   onSignOut,
   onNav,
   onPaywall,
 }: {
   user?: UserAccount | null;
   profile?: UserProfile | null;
+  progress?: UserProgress | null;
   onSignOut?: () => void;
   onNav: (tab: Tab) => void;
   onPaywall: () => void;
 }) {
+  const streak = progress?.streakCount || 1;
+  const xp = progress?.xp || 0;
+  const repsCompleted = progress?.completedLessons.length || 0;
+  const weekReps = Math.min(7, repsCompleted);
+  const consistencyPct = Math.round((weekReps / 7) * 100);
+
   return (
     <ScreenShell bottomNav activeTab="profile">
       <View style={styles.profileHeader}><IconButton icon="settings" onPress={() => undefined} /><Text style={styles.profileHeaderTitle}>Your profile</Text><IconButton icon="share-2" onPress={() => undefined} /></View>
@@ -1248,7 +1506,7 @@ function Profile({
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={styles.companionTitle}>Coding Companion: Kai</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text style={styles.companionSub}>Streak Buddy · 7-Day Hot Streak</Text>
+            <Text style={styles.companionSub}>Streak Buddy · {streak} Day Streak</Text>
             <Image
               source={require('@/assets/images/streak_emoji.png')}
               style={{ width: 16, height: 16 }}
@@ -1265,22 +1523,29 @@ function Profile({
             style={{ width: 22, height: 22, marginBottom: 2 }}
             resizeMode="contain"
           />
-          <Text style={styles.profileStatValue}>7</Text>
+          <Text style={styles.profileStatValue}>{streak}</Text>
           <Text style={styles.profileStatLabel}>day streak</Text>
         </View>
         <View style={styles.profileStat}>
           <Feather name="star" size={20} color={theme.yellowDark} strokeWidth={2.8} />
-          <Text style={styles.profileStatValue}>1,240</Text>
+          <Text style={styles.profileStatValue}>{xp.toLocaleString()}</Text>
           <Text style={styles.profileStatLabel}>total XP</Text>
         </View>
         <View style={styles.profileStat}>
           <Feather name="check-circle" size={20} color={theme.purple} strokeWidth={2.8} />
-          <Text style={styles.profileStatValue}>28</Text>
+          <Text style={styles.profileStatValue}>{repsCompleted}</Text>
           <Text style={styles.profileStatLabel}>reps solved</Text>
         </View>
       </View>
       <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>Weekly consistency</Text><Text style={styles.seeAll}>This week</Text></View>
-      <View style={styles.consistencyCard}><View style={styles.consistencyTop}><Text style={styles.consistencyTitle}>You’re building a real habit.</Text><Text style={styles.consistencyPercent}>57%</Text></View><ProgressBar value={0.57} color={theme.mintDark} height={12} /><Text style={styles.consistencyNote}>4 out of 7 daily reps completed</Text></View>
+      <View style={styles.consistencyCard}>
+        <View style={styles.consistencyTop}>
+          <Text style={styles.consistencyTitle}>You’re building a real habit.</Text>
+          <Text style={styles.consistencyPercent}>{consistencyPct}%</Text>
+        </View>
+        <ProgressBar value={consistencyPct / 100} color={theme.mintDark} height={12} />
+        <Text style={styles.consistencyNote}>{weekReps} out of 7 daily reps completed</Text>
+      </View>
       <View style={styles.proBadgeCard}><View style={styles.proIcon}><Feather name="award" size={24} color={theme.purpleDark} strokeWidth={2.6} /></View><View style={{ flex: 1 }}><Text style={styles.proTitle}>Get more from your reps</Text><Text style={styles.proSub}>Unlock smart review plans and deeper stats.</Text></View><Pressable onPress={onPaywall}><Feather name="chevron-right" size={20} color={theme.purpleDark} /></Pressable></View>
       
       <Text style={styles.settingsLabel}>TURSO DATABASE & ONBOARDING DATA</Text>
@@ -1343,6 +1608,8 @@ export default function Index() {
   const [selectedTopic, setSelectedTopic] = useState('Arrays');
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
+  const [practiceLessonId, setPracticeLessonId] = useState<string>('two-sum');
   const [splash, setSplash] = useState(true);
 
   useEffect(() => {
@@ -1351,8 +1618,12 @@ export default function Index() {
         const session = await getStoredSession();
         if (session) {
           setCurrentUser(session);
-          const profile = await getUserProfile(session.id);
+          const [profile, progress] = await Promise.all([
+            getUserProfile(session.id),
+            getUserProgress(session.id),
+          ]);
           setUserProfile(profile);
+          setUserProgress(progress);
           if (profile?.completedOnboarding) {
             setScreen('home');
           } else {
@@ -1372,6 +1643,8 @@ export default function Index() {
 
   const handleAuthSuccess = async (user: UserAccount, isNewUser: boolean) => {
     setCurrentUser(user);
+    const progress = await getUserProgress(user.id);
+    setUserProgress(progress);
     if (isNewUser) {
       setScreen('onboarding');
     } else {
@@ -1387,8 +1660,12 @@ export default function Index() {
 
   const handleOnboardingComplete = async () => {
     if (currentUser) {
-      const profile = await getUserProfile(currentUser.id);
+      const [profile, progress] = await Promise.all([
+        getUserProfile(currentUser.id),
+        getUserProgress(currentUser.id),
+      ]);
       setUserProfile(profile);
+      setUserProgress(progress);
     }
     setActiveTab('home');
     setScreen('home');
@@ -1398,8 +1675,24 @@ export default function Index() {
     await saveSession(null);
     setCurrentUser(null);
     setUserProfile(null);
+    setUserProgress(null);
     setActiveTab('home');
     setScreen('auth');
+  };
+
+  const startPractice = (lessonId?: string) => {
+    if (lessonId) {
+      setPracticeLessonId(lessonId);
+    }
+    setScreen('practice');
+  };
+
+  const handlePracticeComplete = async (xpReward: number) => {
+    if (currentUser) {
+      const updated = await recordLessonCompleted(currentUser.id, practiceLessonId, xpReward);
+      setUserProgress(updated);
+    }
+    setScreen('reward');
   };
 
   const goTab = (tab: Tab) => {
@@ -1446,15 +1739,27 @@ export default function Index() {
           onComplete={handleOnboardingComplete}
         />
       )}
-      {screen === 'practice' && <Practice onBack={() => setScreen(activeTab)} onComplete={() => setScreen('reward')} />}
-      {screen === 'reward' && <Reward onContinue={() => setScreen(activeTab)} />}
+      {screen === 'practice' && (
+        <Practice
+          lessonId={practiceLessonId}
+          onBack={() => setScreen(activeTab)}
+          onComplete={handlePracticeComplete}
+        />
+      )}
+      {screen === 'reward' && (
+        <Reward
+          streak={userProgress?.streakCount || 1}
+          onContinue={() => setScreen(activeTab)}
+        />
+      )}
       {screen === 'paywall' && <Paywall onBack={() => setScreen('profile')} />}
 
       {screen === 'home' && (
         <Home
           user={currentUser}
           profile={userProfile}
-          onPractice={() => setScreen('practice')}
+          progress={userProgress || undefined}
+          onPractice={startPractice}
           onTopics={() => goTab('topics')}
           onCourse={() => goTab('course')}
           onProfile={() => goTab('profile')}
@@ -1466,8 +1771,9 @@ export default function Index() {
       {screen === 'course' && (
         <CoursePath
           topic={selectedTopic}
+          progress={userProgress || undefined}
           onBack={() => goTab('home')}
-          onPractice={() => setScreen('practice')}
+          onPractice={startPractice}
           onNav={goTab}
         />
       )}
@@ -1484,13 +1790,14 @@ export default function Index() {
         <Leaderboard
           user={currentUser}
           onNav={goTab}
-          onPractice={() => setScreen('practice')}
+          onPractice={() => startPractice()}
         />
       )}
       {screen === 'profile' && (
         <Profile
           user={currentUser}
           profile={userProfile}
+          progress={userProgress}
           onSignOut={handleSignOut}
           onNav={goTab}
           onPaywall={() => setScreen('paywall')}
@@ -2348,4 +2655,130 @@ const styles = StyleSheet.create({
   priceFine: { color: theme.mutedForeground, fontFamily: 'Inter_400Regular', fontSize: 10, marginTop: 2 },
   priceSave: { color: theme.purpleDark, fontFamily: 'Inter_700Bold', fontSize: 9, letterSpacing: 0.4 },
   paywallFine: { color: theme.mutedForeground, fontFamily: 'Inter_400Regular', fontSize: 9, textAlign: 'center', marginTop: 1 },
+  langSelectorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 10,
+  },
+  langPill: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  langPillActive: {
+    backgroundColor: '#EDE9FE',
+    borderColor: '#7C3AED',
+  },
+  langPillText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: '#64748B',
+  },
+  langPillTextActive: {
+    color: '#7C3AED',
+  },
+  quizCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderBottomWidth: 4,
+    borderColor: '#E2E8F0',
+    borderBottomColor: '#CBD5E1',
+    padding: 16,
+    marginVertical: 14,
+    gap: 12,
+  },
+  quizHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  quizBadge: {
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  quizBadgeText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 10,
+    color: '#D97706',
+    letterSpacing: 0.6,
+  },
+  quizQuestion: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 15,
+    color: '#0F172A',
+    lineHeight: 22,
+  },
+  quizOptionBtn: {
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderBottomWidth: 3,
+    borderColor: '#E2E8F0',
+    borderBottomColor: '#CBD5E1',
+    backgroundColor: '#F8FAFC',
+    padding: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  quizOptionCorrect: {
+    backgroundColor: '#ECFDF5',
+    borderColor: '#10B981',
+    borderBottomColor: '#059669',
+  },
+  quizOptionWrong: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#EF4444',
+    borderBottomColor: '#DC2626',
+  },
+  quizOptionIndex: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    backgroundColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quizOptionIndexText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    color: '#475569',
+  },
+  quizOptionText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 13,
+    color: '#1E293B',
+    flex: 1,
+    lineHeight: 18,
+  },
+  quizFeedbackBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#F5F3FF',
+    marginTop: 4,
+  },
+  quizFeedbackText: {
+    flex: 1,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: '#6D28D9',
+    lineHeight: 18,
+  },
+  refreshBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

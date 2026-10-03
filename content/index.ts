@@ -1,5 +1,7 @@
 import { Subject, Topic, LessonContent, SubjectId } from '../types/content';
 import { arraysTopic } from './subjects/dsa/arrays';
+import { twoPointersTopic } from './subjects/dsa/two-pointers';
+import { binarySearchTopic } from './subjects/dsa/binary-search';
 import { cachingTopic } from './subjects/system-design/caching';
 import { operatingSystemsTopic } from './subjects/core-cs/os-and-db';
 
@@ -13,7 +15,7 @@ export const allSubjects: Subject[] = [
     darkColor: '#5B21B6',
     labelColor: '#DDD6FE',
     subTextColor: '#EDE9FE',
-    topics: [arraysTopic]
+    topics: [arraysTopic, twoPointersTopic, binarySearchTopic]
   },
   {
     id: 'system-design',
