@@ -87,6 +87,7 @@ const iconMap = {
   'git-commit': 'source-commit',
   info: 'information',
   loader: 'loading',
+  cpu: 'cpu-64-bit',
 } as const;
 type IconName = keyof typeof iconMap;
 
@@ -101,7 +102,8 @@ function AppIcon({
   fill?: string;
   strokeWidth?: number;
 }) {
-  return <MaterialCommunityIcons name={iconMap[name]} size={size} color={color} />;
+  const glyph = (iconMap as Record<string, string>)[name] || 'circle-outline';
+  return <MaterialCommunityIcons name={glyph as any} size={size} color={color} />;
 }
 
 const Feather = AppIcon;
@@ -357,7 +359,10 @@ function useAppUpdates() {
 
   useEffect(() => {
     if (!__DEV__ && Updates.isEnabled) {
-      void check();
+      const timer = setTimeout(() => {
+        void check();
+      }, 2500);
+      return () => clearTimeout(timer);
     }
   }, [check]);
 
@@ -369,9 +374,9 @@ function useAppUpdates() {
     statusMessage,
     check,
     reload,
-    updateId: Updates.updateId,
-    channel: Updates.channel,
-    isEmbedded: Updates.isEmbeddedLaunch,
+    updateId: Updates.updateId || null,
+    channel: Updates.channel || null,
+    isEmbedded: Updates.isEmbeddedLaunch || false,
   };
 }
 
@@ -689,11 +694,12 @@ function Home({
 }) {
   const nextLesson = useMemo(() => {
     const all = getAllTopics().flatMap((t) => t.lessons);
-    return all.find((l) => !progress?.completedLessons.includes(l.id)) || all[0];
+    const completed = Array.isArray(progress?.completedLessons) ? progress.completedLessons : [];
+    return all.find((l) => !completed.includes(l.id)) || all[0];
   }, [progress]);
 
   const streak = progress?.streakCount || 1;
-  const repsCompleted = progress?.completedLessons.length || 0;
+  const repsCompleted = Array.isArray(progress?.completedLessons) ? progress.completedLessons.length : 0;
 
   return (
     <ScreenShell bottomNav activeTab="home">
@@ -1200,7 +1206,8 @@ function CoursePath({
   }, [allTopics, topicTitle]);
 
   const lessons = currentTopic.lessons;
-  const completedCount = lessons.filter((l) => progress?.completedLessons.includes(l.id)).length;
+  const completed = Array.isArray(progress?.completedLessons) ? progress.completedLessons : [];
+  const completedCount = lessons.filter((l) => completed.includes(l.id)).length;
   const pctComplete = Math.round((completedCount / Math.max(1, lessons.length)) * 100);
 
   return (
@@ -1234,8 +1241,8 @@ function CoursePath({
       </View>
       <View style={styles.windingPathContainer}>
         {lessons.map((lesson, index) => {
-          const isDone = progress?.completedLessons.includes(lesson.id);
-          const isPrevDone = index === 0 || progress?.completedLessons.includes(lessons[index - 1].id);
+          const isDone = completed.includes(lesson.id);
+          const isPrevDone = index === 0 || completed.includes(lessons[index - 1].id);
           const isCurrent = !isDone && isPrevDone;
           const locked = !isDone && !isCurrent;
 
@@ -1606,7 +1613,7 @@ function Profile({
 }) {
   const streak = progress?.streakCount || 1;
   const xp = progress?.xp || 0;
-  const repsCompleted = progress?.completedLessons.length || 0;
+  const repsCompleted = Array.isArray(progress?.completedLessons) ? progress.completedLessons.length : 0;
   const weekReps = Math.min(7, repsCompleted);
   const consistencyPct = Math.round((weekReps / 7) * 100);
 
@@ -1769,7 +1776,72 @@ function Paywall({ onBack }: { onBack: () => void }) {
   );
 }
 
-export default function Index() {
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: string | null }
+> {
+  state = { hasError: false, error: null };
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error: String(error?.message || error) };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.warn('KaiCode ErrorBoundary caught:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaView
+          style={{
+            flex: 1,
+            backgroundColor: '#0F172A',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 24,
+          }}
+        >
+          <Text
+            style={{
+              color: '#FFFFFF',
+              fontSize: 22,
+              fontFamily: 'Nunito_800ExtraBold',
+              marginBottom: 10,
+            }}
+          >
+            KaiCode Recovery
+          </Text>
+          <Text
+            style={{
+              color: '#CBD5E1',
+              fontSize: 13,
+              fontFamily: 'Inter_400Regular',
+              textAlign: 'center',
+              lineHeight: 18,
+              marginBottom: 24,
+            }}
+          >
+            {this.state.error || 'A screen loading issue occurred. Tap below to refresh.'}
+          </Text>
+          <Pressable
+            onPress={() => this.setState({ hasError: false, error: null })}
+            style={{
+              backgroundColor: '#7C3AED',
+              paddingHorizontal: 24,
+              paddingVertical: 14,
+              borderRadius: 14,
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontFamily: 'Nunito_800ExtraBold', fontSize: 14 }}>
+              Reload Screen
+            </Text>
+          </Pressable>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function KaiCodeApp() {
   const [screen, setScreen] = useState<Screen>('auth');
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [selectedTopic, setSelectedTopic] = useState('Arrays');
@@ -1982,6 +2054,14 @@ export default function Index() {
 
       {isTabScreen && <BottomNav active={activeTab} onChange={goTab} />}
     </View>
+  );
+}
+
+export default function Index() {
+  return (
+    <ErrorBoundary>
+      <KaiCodeApp />
+    </ErrorBoundary>
   );
 }
 

@@ -421,13 +421,24 @@ export async function getUserProgress(userId: string): Promise<UserProgress> {
       });
       if (res.rows.length > 0) {
         const row = res.rows[0];
+        let lessons: string[] = ['arrays-1', 'arrays-2'];
+        let nodes: string[] = ['arrays-1', 'arrays-2', 'arrays-3'];
+        try {
+          const parsed = JSON.parse(String(row.completed_lessons || '[]'));
+          if (Array.isArray(parsed)) lessons = parsed;
+        } catch (_) {}
+        try {
+          const parsed = JSON.parse(String(row.unlocked_nodes || '[]'));
+          if (Array.isArray(parsed)) nodes = parsed;
+        } catch (_) {}
+
         return {
           userId: String(row.user_id),
-          xp: Number(row.xp),
-          streakCount: Number(row.streak_count),
-          lastActiveDate: String(row.last_active_date),
-          completedLessons: JSON.parse(String(row.completed_lessons || '[]')),
-          unlockedNodes: JSON.parse(String(row.unlocked_nodes || '[]')),
+          xp: Number(row.xp) || 0,
+          streakCount: Number(row.streak_count) || 1,
+          lastActiveDate: String(row.last_active_date || defaultProgress.lastActiveDate),
+          completedLessons: lessons,
+          unlockedNodes: nodes,
         };
       }
     } catch (err) {
@@ -439,7 +450,17 @@ export async function getUserProgress(userId: string): Promise<UserProgress> {
     const raw = await AsyncStorage.getItem(PROGRESS_LOCAL_STORAGE_KEY);
     if (raw) {
       const all = JSON.parse(raw);
-      if (all[userId]) return all[userId];
+      if (all[userId]) {
+        const stored = all[userId];
+        return {
+          userId,
+          xp: typeof stored.xp === 'number' ? stored.xp : defaultProgress.xp,
+          streakCount: typeof stored.streakCount === 'number' ? stored.streakCount : defaultProgress.streakCount,
+          lastActiveDate: stored.lastActiveDate || defaultProgress.lastActiveDate,
+          completedLessons: Array.isArray(stored.completedLessons) ? stored.completedLessons : defaultProgress.completedLessons,
+          unlockedNodes: Array.isArray(stored.unlockedNodes) ? stored.unlockedNodes : defaultProgress.unlockedNodes,
+        };
+      }
     }
   } catch {}
 
@@ -447,6 +468,15 @@ export async function getUserProgress(userId: string): Promise<UserProgress> {
 }
 
 export async function saveUserProgress(progress: UserProgress): Promise<boolean> {
+  const safeProgress: UserProgress = {
+    userId: progress.userId,
+    xp: typeof progress.xp === 'number' ? progress.xp : 0,
+    streakCount: typeof progress.streakCount === 'number' ? progress.streakCount : 1,
+    lastActiveDate: progress.lastActiveDate || new Date().toISOString().split('T')[0],
+    completedLessons: Array.isArray(progress.completedLessons) ? progress.completedLessons : [],
+    unlockedNodes: Array.isArray(progress.unlockedNodes) ? progress.unlockedNodes : [],
+  };
+
   if (isTursoConfigured) {
     try {
       await initTursoTables();
@@ -455,12 +485,12 @@ export async function saveUserProgress(progress: UserProgress): Promise<boolean>
               (user_id, xp, streak_count, last_active_date, completed_lessons, unlocked_nodes)
               VALUES (?, ?, ?, ?, ?, ?)`,
         args: [
-          progress.userId,
-          progress.xp,
-          progress.streakCount,
-          progress.lastActiveDate,
-          JSON.stringify(progress.completedLessons),
-          JSON.stringify(progress.unlockedNodes),
+          safeProgress.userId,
+          safeProgress.xp,
+          safeProgress.streakCount,
+          safeProgress.lastActiveDate,
+          JSON.stringify(safeProgress.completedLessons),
+          JSON.stringify(safeProgress.unlockedNodes),
         ],
       });
     } catch (err) {
@@ -471,7 +501,7 @@ export async function saveUserProgress(progress: UserProgress): Promise<boolean>
   try {
     const raw = await AsyncStorage.getItem(PROGRESS_LOCAL_STORAGE_KEY);
     const all = raw ? JSON.parse(raw) : {};
-    all[progress.userId] = progress;
+    all[safeProgress.userId] = safeProgress;
     await AsyncStorage.setItem(PROGRESS_LOCAL_STORAGE_KEY, JSON.stringify(all));
     return true;
   } catch (err) {
@@ -486,12 +516,13 @@ export async function recordLessonCompleted(
   xpGained: number = 40
 ): Promise<UserProgress> {
   const current = await getUserProgress(userId);
-  const alreadyDone = current.completedLessons.includes(lessonId);
+  const currentLessons = Array.isArray(current.completedLessons) ? current.completedLessons : [];
+  const alreadyDone = currentLessons.includes(lessonId);
   const now = new Date().toISOString().split('T')[0];
 
   const updatedLessons = alreadyDone
-    ? current.completedLessons
-    : [...current.completedLessons, lessonId];
+    ? currentLessons
+    : [...currentLessons, lessonId];
 
   // Calculate streak increment if active today vs yesterday
   let updatedStreak = current.streakCount;
