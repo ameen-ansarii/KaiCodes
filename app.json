@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "KaiCode: Daily DSA with Kai",
+    "slug": "kaicode",
+    "version": "1.0.0",
+    "owner": "xv.amen",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "kaicode",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.xvamen.kaicode",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#7C3AED"
+      }
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "34f491a9-2d1e-418c-957a-acfac2c711ff"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/34f491a9-2d1e-418c-957a-acfac2c711ff"
+    }
+  }
+}
