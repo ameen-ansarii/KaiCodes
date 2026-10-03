@@ -15,6 +15,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as Updates from 'expo-updates';
 import colors from '@/constants/colors';
 import { getAllSubjects, getSubjectById, getAllTopics, getTopicById, getLessonById } from '@/content';
 import { SubjectId, LessonContent } from '@/types/content';
@@ -81,6 +82,11 @@ const iconMap = {
   trophy: 'trophy',
   database: 'database',
   'log-out': 'logout',
+  'refresh-cw': 'reload',
+  'download-cloud': 'cloud-download',
+  'git-commit': 'source-commit',
+  info: 'information',
+  loader: 'loading',
 } as const;
 type IconName = keyof typeof iconMap;
 
@@ -305,19 +311,128 @@ function LogoLockup({ compact = false, showTitle = true, title }: { compact?: bo
   );
 }
 
+function useAppUpdates() {
+  const [checking, setChecking] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  const check = useCallback(async () => {
+    if (__DEV__ || !Updates.isEnabled) {
+      setStatusMessage('Live OTA updates active on installed builds.');
+      return;
+    }
+    try {
+      setChecking(true);
+      setStatusMessage('Checking for live updates...');
+      const result = await Updates.checkForUpdateAsync();
+      if (result.isAvailable) {
+        setUpdateAvailable(true);
+        setStatusMessage('New curriculum update found! Downloading...');
+        setDownloading(true);
+        await Updates.fetchUpdateAsync();
+        setDownloading(false);
+        setUpdateReady(true);
+        setStatusMessage('Update ready! Tap below to restart.');
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        setStatusMessage('Your app is up to date with the latest reps!');
+      }
+    } catch (err: any) {
+      console.warn('Update check failed:', err);
+      setStatusMessage('Could not connect to update service.');
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  const reload = useCallback(async () => {
+    try {
+      await Updates.reloadAsync();
+    } catch (err) {
+      console.warn('App reload failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!__DEV__ && Updates.isEnabled) {
+      void check();
+    }
+  }, [check]);
+
+  return {
+    checking,
+    downloading,
+    updateAvailable,
+    updateReady,
+    statusMessage,
+    check,
+    reload,
+    updateId: Updates.updateId,
+    channel: Updates.channel,
+    isEmbedded: Updates.isEmbeddedLaunch,
+  };
+}
+
+function UpdateBanner({
+  downloading,
+  updateReady,
+  onReload,
+}: {
+  downloading: boolean;
+  updateReady: boolean;
+  onReload: () => void;
+}) {
+  if (!downloading && !updateReady) return null;
+
+  return (
+    <View style={styles.updateFloatingBanner}>
+      <Mascot pose={updateReady ? 'accepted' : 'speedrun'} size={44} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.updateFloatingTitle}>
+          {updateReady ? 'New Version Ready!' : 'Downloading Update...'}
+        </Text>
+        <Text style={styles.updateFloatingSub}>
+          {updateReady
+            ? 'Two Pointers, Binary Search and live leaderboards are ready.'
+            : 'Kai is fetching the latest problem set in background.'}
+        </Text>
+      </View>
+      {updateReady ? (
+        <Pressable onPress={onReload} style={styles.updateFloatingButton}>
+          <Text style={styles.updateFloatingButtonText}>Restart</Text>
+          <Feather name="refresh-cw" size={13} color="#FFFFFF" />
+        </Pressable>
+      ) : (
+        <View style={styles.updateSpinnerPill}>
+          <Text style={styles.updateSpinnerPillText}>Syncing</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 function HeaderStats({
   onProfile,
   xp = 0,
   streak = 1,
+  isUpdating = false,
 }: {
   onProfile: () => void;
   xp?: number;
   streak?: number;
+  isUpdating?: boolean;
 }) {
   return (
     <View style={styles.headerStats}>
       <LogoLockup compact showTitle />
       <View style={{ flex: 1 }} />
+      {isUpdating ? (
+        <View style={styles.updatingHeaderPill}>
+          <Text style={styles.updatingHeaderPillText}>SYNCING...</Text>
+        </View>
+      ) : null}
       <View style={styles.statPill}>
         <Feather name="star" size={15} color={theme.yellowDark} fill={theme.yellowDark} />
         <Text style={styles.statValue}>{xp.toLocaleString()}</Text>
@@ -551,6 +666,7 @@ function Home({
   user,
   profile,
   progress,
+  isUpdating,
   onPractice,
   onTopics,
   onCourse,
@@ -562,6 +678,7 @@ function Home({
   user?: UserAccount | null;
   profile?: UserProfile | null;
   progress?: UserProgress;
+  isUpdating?: boolean;
   onPractice: (lessonId?: string) => void;
   onTopics: () => void;
   onCourse: () => void;
@@ -580,7 +697,7 @@ function Home({
 
   return (
     <ScreenShell bottomNav activeTab="home">
-      <HeaderStats onProfile={onProfile} xp={progress?.xp || 0} streak={streak} />
+      <HeaderStats onProfile={onProfile} xp={progress?.xp || 0} streak={streak} isUpdating={isUpdating} />
       <View style={styles.greetingBanner}>
         <View style={styles.greetingCopy}>
           <Text style={styles.greeting}>Good morning, {user?.displayName || 'Engineer'}</Text>
@@ -1474,6 +1591,7 @@ function Profile({
   user,
   profile,
   progress,
+  updates,
   onSignOut,
   onNav,
   onPaywall,
@@ -1481,6 +1599,7 @@ function Profile({
   user?: UserAccount | null;
   profile?: UserProfile | null;
   progress?: UserProgress | null;
+  updates?: ReturnType<typeof useAppUpdates>;
   onSignOut?: () => void;
   onNav: (tab: Tab) => void;
   onPaywall: () => void;
@@ -1569,6 +1688,54 @@ function Profile({
         </View>
       </View>
 
+      <Text style={styles.settingsLabel}>APP VERSION & OVER-THE-AIR UPDATES</Text>
+      <View style={styles.settingsCard}>
+        <View style={styles.settingsRow}>
+          <Feather name="download-cloud" size={18} color={theme.purple} />
+          <Text style={styles.settingsText}>EAS Update Channel</Text>
+          <Text style={styles.settingsValue}>preview (Live)</Text>
+        </View>
+        <View style={styles.settingsRow}>
+          <Feather name="git-commit" size={18} color={theme.mutedForeground} />
+          <Text style={styles.settingsText}>Release Build ID</Text>
+          <Text style={styles.settingsValue}>
+            {updates?.updateId ? updates.updateId.slice(0, 8) : 'Embedded v1.0'}
+          </Text>
+        </View>
+        {updates?.statusMessage ? (
+          <View style={styles.updateStatusNotice}>
+            <Feather name="info" size={14} color={theme.purpleDark} />
+            <Text style={styles.updateStatusNoticeText}>{updates.statusMessage}</Text>
+          </View>
+        ) : null}
+        <Pressable
+          disabled={updates?.checking || updates?.downloading}
+          onPress={() => {
+            if (updates?.updateReady) {
+              void updates.reload();
+            } else if (updates?.check) {
+              void updates.check();
+            }
+          }}
+          style={styles.checkUpdateBtn}
+        >
+          <Feather
+            name={updates?.checking || updates?.downloading ? 'loader' : 'refresh-cw'}
+            size={16}
+            color="#FFFFFF"
+          />
+          <Text style={styles.checkUpdateBtnText}>
+            {updates?.checking
+              ? 'Checking for updates...'
+              : updates?.downloading
+              ? 'Downloading update...'
+              : updates?.updateReady
+              ? 'Update ready! Tap to reload'
+              : 'Check for updates'}
+          </Text>
+        </Pressable>
+      </View>
+
       <Text style={styles.settingsLabel}>ACCOUNT ACTIONS</Text>
       <View style={styles.settingsCard}>
         <Pressable onPress={onSignOut} style={styles.settingsRow}>
@@ -1611,6 +1778,7 @@ export default function Index() {
   const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
   const [practiceLessonId, setPracticeLessonId] = useState<string>('two-sum');
   const [splash, setSplash] = useState(true);
+  const appUpdates = useAppUpdates();
 
   useEffect(() => {
     async function initSession() {
@@ -1759,6 +1927,7 @@ export default function Index() {
           user={currentUser}
           profile={userProfile}
           progress={userProgress || undefined}
+          isUpdating={appUpdates.downloading}
           onPractice={startPractice}
           onTopics={() => goTab('topics')}
           onCourse={() => goTab('course')}
@@ -1798,11 +1967,18 @@ export default function Index() {
           user={currentUser}
           profile={userProfile}
           progress={userProgress}
+          updates={appUpdates}
           onSignOut={handleSignOut}
           onNav={goTab}
           onPaywall={() => setScreen('paywall')}
         />
       )}
+
+      <UpdateBanner
+        downloading={appUpdates.downloading}
+        updateReady={appUpdates.updateReady}
+        onReload={appUpdates.reload}
+      />
 
       {isTabScreen && <BottomNav active={activeTab} onChange={goTab} />}
     </View>
@@ -2780,5 +2956,115 @@ const styles = StyleSheet.create({
     backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  updateFloatingBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 92,
+    backgroundColor: '#1E1B4B',
+    borderRadius: 20,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 2,
+    borderColor: '#7C3AED',
+    borderBottomWidth: 4,
+    borderBottomColor: '#5B21B6',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 10,
+    zIndex: 999,
+  },
+  updateFloatingTitle: {
+    color: '#FFFFFF',
+    fontFamily: 'Nunito_800ExtraBold',
+    fontSize: 14,
+  },
+  updateFloatingSub: {
+    color: '#DDD6FE',
+    fontFamily: 'Inter_400Regular',
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 2,
+  },
+  updateFloatingButton: {
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderBottomWidth: 2.5,
+    borderBottomColor: '#5B21B6',
+  },
+  updateFloatingButtonText: {
+    color: '#FFFFFF',
+    fontFamily: 'Nunito_800ExtraBold',
+    fontSize: 12,
+  },
+  updateSpinnerPill: {
+    backgroundColor: '#312E81',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  updateSpinnerPillText: {
+    color: '#C4B5FD',
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+  },
+  updateStatusNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F5F3FF',
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    marginTop: 8,
+  },
+  updateStatusNoticeText: {
+    color: '#6D28D9',
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    flex: 1,
+  },
+  checkUpdateBtn: {
+    backgroundColor: '#7C3AED',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 10,
+    borderBottomWidth: 3.5,
+    borderBottomColor: '#5B21B6',
+  },
+  checkUpdateBtnText: {
+    color: '#FFFFFF',
+    fontFamily: 'Nunito_800ExtraBold',
+    fontSize: 13,
+  },
+  updatingHeaderPill: {
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FDE047',
+    marginRight: 6,
+  },
+  updatingHeaderPillText: {
+    color: '#854D0E',
+    fontFamily: 'Nunito_800ExtraBold',
+    fontSize: 10,
   },
 });
