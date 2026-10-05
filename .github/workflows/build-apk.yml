@@ -46,11 +46,8 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 📱 Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 🐘 Setup Gradle Cache (Super Fast Subsequent Builds)
-        uses: gradle/actions/setup-gradle@v3
+      - name: 🐘 Setup Gradle Cache (Fast Subsequent Builds)
+        uses: gradle/actions/setup-gradle@v4
 
       - name: 🚀 Setup EAS CLI
         uses: expo/expo-github-action@v8
@@ -62,6 +59,8 @@ jobs:
         run: pnpm install --frozen-lockfile=false
 
       - name: 🔨 Compile Android APK (Local on Linux Runner)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           pnpm exec eas build \
             --platform android \
