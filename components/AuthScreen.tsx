@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
+  Animated,
+  Dimensions,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -12,79 +14,116 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { loginUser, registerUser, UserAccount } from '@/services/turso';
+import { loginUser, registerUser, createGuestUser, UserAccount } from '@/services/turso';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface AuthScreenProps {
   onSuccess: (user: UserAccount, isNewUser: boolean) => void;
 }
 
 export function AuthScreen({ onSuccess }: AuthScreenProps) {
-  const [mode, setMode] = useState<'signin' | 'signup'>('signup');
+  // Navigation states
+  const [view, setView] = useState<'welcome' | 'form'>('welcome');
+  // Default to Sign In first as requested by user
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [formStep, setFormStep] = useState(1);
+
+  // Form fields
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
-  const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  // Slide animation between steps
+  const slideAnim = useRef(new Animated.Value(0)).current;
+  const fadeAnim = useRef(new Animated.Value(1)).current;
 
   const tap = () => {
     if (Platform.OS !== 'web') {
       try {
-        Haptics.selectionAsync();
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       } catch {}
     }
   };
 
-  const handleSubmit = async () => {
+  const transitionStep = (direction: 'next' | 'prev', callback?: () => void) => {
     tap();
     setErrorMessage('');
+    setIsAnimating(true);
+    const outValue = direction === 'next' ? -SCREEN_WIDTH * 0.22 : SCREEN_WIDTH * 0.22;
+    const inStartValue = direction === 'next' ? SCREEN_WIDTH * 0.22 : -SCREEN_WIDTH * 0.22;
 
-    if (!email.trim() || !password.trim()) {
-      setErrorMessage('Please enter your email and password.');
-      return;
-    }
-
-    if (mode === 'signup' && !username.trim()) {
-      setErrorMessage('Please pick a unique username.');
-      return;
-    }
-
-    if (password.length < 6) {
-      setErrorMessage('Password must be at least 6 characters.');
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      if (mode === 'signup') {
-        const result = await registerUser({
-          email: email.trim(),
-          password,
-          username: username.trim(),
-          displayName: displayName.trim() || username.trim(),
-        });
-
-        if (result.error) {
-          setErrorMessage(result.error);
-        } else if (result.user) {
-          onSuccess(result.user, true);
-        }
+    Animated.parallel([
+      Animated.timing(slideAnim, {
+        toValue: outValue,
+        duration: 140,
+        useNativeDriver: true,
+      }),
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 140,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      if (direction === 'next') {
+        setFormStep((prev) => prev + 1);
       } else {
-        const result = await loginUser({
-          emailOrUsername: email.trim(),
-          password,
-        });
-
-        if (result.error) {
-          setErrorMessage(result.error);
-        } else if (result.user) {
-          onSuccess(result.user, false);
-        }
+        setFormStep((prev) => Math.max(1, prev - 1));
       }
+      callback?.();
+
+      slideAnim.setValue(inStartValue);
+      Animated.parallel([
+        Animated.timing(slideAnim, {
+          toValue: 0,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        setIsAnimating(false);
+      });
+    });
+  };
+
+  const handleBack = () => {
+    tap();
+    setErrorMessage('');
+    if (view === 'form') {
+      if (formStep > 1) {
+        transitionStep('prev');
+      } else {
+        setView('welcome');
+      }
+    }
+  };
+
+  const handleStartEmail = () => {
+    tap();
+    setErrorMessage('');
+    setFormStep(1);
+    setView('form');
+  };
+
+  const handleGuestLogin = async () => {
+    tap();
+    setErrorMessage('');
+    setLoading(true);
+    try {
+      const guest = await createGuestUser();
+      onSuccess(guest, false);
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Authentication failed. Please try again.');
+      setErrorMessage(err?.message || 'Could not start guest session.');
     } finally {
       setLoading(false);
     }
@@ -93,399 +132,814 @@ export function AuthScreen({ onSuccess }: AuthScreenProps) {
   const handleDemoLogin = async () => {
     tap();
     setLoading(true);
-    const demoUser = await registerUser({
-      email: 'alex@kaicode.dev',
-      password: 'password123',
-      username: 'alex_code',
-      displayName: 'Alex Morgan',
-    });
-    setLoading(false);
-    if (demoUser.user) {
-      onSuccess(demoUser.user, true);
+    setErrorMessage('');
+    try {
+      const demoUser = await registerUser({
+        email: 'alex@kaicode.dev',
+        password: 'password123',
+        username: 'alex_code',
+        displayName: 'Alex Morgan',
+      });
+      if (demoUser.user) {
+        onSuccess(demoUser.user, false);
+      }
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Demo sign in failed.');
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Stepped validation & submission
+  const handleContinue = async () => {
+    tap();
+    setErrorMessage('');
+
+    if (mode === 'signin') {
+      // Step 1: Email or Username
+      if (formStep === 1) {
+        if (!email.trim()) {
+          setErrorMessage('Please enter your email or username to continue.');
+          return;
+        }
+        transitionStep('next');
+        return;
+      }
+
+      // Step 2: Password
+      if (formStep === 2) {
+        if (!password) {
+          setErrorMessage('Please enter your password.');
+          return;
+        }
+        setLoading(true);
+        try {
+          const res = await loginUser({
+            emailOrUsername: email.trim(),
+            password,
+          });
+          if (res.error) {
+            setErrorMessage(res.error);
+          } else if (res.user) {
+            onSuccess(res.user, false);
+          }
+        } catch (err: any) {
+          setErrorMessage(err?.message || 'Sign in failed. Please check credentials.');
+        } finally {
+          setLoading(false);
+        }
+      }
+    } else {
+      // Sign Up Flow
+      // Step 1: Email
+      if (formStep === 1) {
+        if (!email.trim() || !email.includes('@')) {
+          setErrorMessage('Please enter a valid email address.');
+          return;
+        }
+        transitionStep('next');
+        return;
+      }
+
+      // Step 2: Username
+      if (formStep === 2) {
+        if (!username.trim()) {
+          setErrorMessage('Please choose a username.');
+          return;
+        }
+        if (username.trim().length < 3) {
+          setErrorMessage('Username must be at least 3 characters.');
+          return;
+        }
+        transitionStep('next');
+        return;
+      }
+
+      // Step 3: Password
+      if (formStep === 3) {
+        if (password.length < 6) {
+          setErrorMessage('Password must be at least 6 characters.');
+          return;
+        }
+        setLoading(true);
+        try {
+          const res = await registerUser({
+            email: email.trim(),
+            username: username.trim(),
+            password,
+            displayName: username.trim(),
+          });
+          if (res.error) {
+            setErrorMessage(res.error);
+          } else if (res.user) {
+            onSuccess(res.user, true);
+          }
+        } catch (err: any) {
+          setErrorMessage(err?.message || 'Account creation failed. Please try again.');
+        } finally {
+          setLoading(false);
+        }
+      }
+    }
+  };
+
+  const toggleAuthMode = () => {
+    tap();
+    setErrorMessage('');
+    setFormStep(1);
+    setMode((prev) => (prev === 'signin' ? 'signup' : 'signin'));
+  };
+
+  // Total steps for current mode
+  const totalSteps = mode === 'signin' ? 2 : 3;
+
+  // ==========================================
+  // VIEW 1: IMMERSIVE WELCOME GATE (Image 1 Style)
+  // ==========================================
+  if (view === 'welcome') {
+    return (
+      <View style={styles.welcomeContainer}>
+        {/* Custom Glowing Horizon Background Artwork - Zoomed out, perfectly cut-to-cut */}
+        <Image
+          source={require('@/assets/images/authbg.png')}
+          style={styles.welcomeBackgroundImage}
+          resizeMode="contain"
+        />
+
+        {/* Top Spacer so the artwork's glowing crescent dome and "KaiCodes" brand is cleanly showcased */}
+        <View style={styles.welcomeArtworkSpacer} />
+
+        {/* Bottom Content Sheet */}
+        <View style={styles.welcomeBottomContent}>
+          <Text style={styles.welcomeTitle}>Welcome to KaiCode</Text>
+          <Text style={styles.welcomeSubtitle}>
+            Master algorithms & system design with interactive daily reps.
+          </Text>
+
+          {/* Primary iOS Apple Pill Button in Our Purple */}
+          <Pressable
+            disabled={loading}
+            onPress={handleStartEmail}
+            style={({ pressed }) => [
+              styles.welcomeEmailBtn,
+              pressed && styles.pillPressed,
+            ]}
+          >
+            <Feather name="mail" size={22} color="#FFFFFF" style={{ marginRight: 10 }} />
+            <Text style={styles.welcomeEmailBtnText}>Continue with Email</Text>
+          </Pressable>
+
+          {/* Secondary Light Card Pill Button */}
+          <Pressable
+            disabled={loading}
+            onPress={handleGuestLogin}
+            style={({ pressed }) => [
+              styles.welcomeGuestBtn,
+              pressed && styles.pillPressed,
+            ]}
+          >
+            <Feather name="compass" size={22} color="#0F172A" style={{ marginRight: 10 }} />
+            <Text style={styles.welcomeGuestBtnText}>Continue as Guest</Text>
+          </Pressable>
+
+          {/* Quick Demo Test Link */}
+          <Pressable onPress={handleDemoLogin} style={styles.demoLink}>
+            <Feather name="zap" size={14} color="#7C3AED" />
+            <Text style={styles.demoLinkText}>Quick Test: Sign in as Alex Morgan</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  // ==========================================
+  // VIEW 2: STEPPED MINIMALIST AUTH (Image 2 Style)
+  // ==========================================
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={styles.container}
+      style={styles.formContainer}
     >
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={styles.formScrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.brandRow}>
-          <Image
-            source={require('@/assets/images/kai_accepted.png')}
-            style={styles.logoMascot}
-            resizeMode="contain"
-          />
-          <Text style={styles.brandName}>
-            kai<Text style={{ color: '#7C3AED' }}>code</Text>
-          </Text>
-        </View>
-
-        <View style={styles.heroBox}>
-          <Text style={styles.heroTitle}>
-            {mode === 'signup' ? 'Create your profile' : 'Welcome back'}
-          </Text>
-          <Text style={styles.heroSubtitle}>
-            {mode === 'signup'
-              ? 'Join fellow engineers leveling up their DSA and Core CS skills with Kai.'
-              : 'Log in to continue your daily engineering streak.'}
-          </Text>
-        </View>
-
-        <View style={styles.togglePill}>
-          <Pressable
-            onPress={() => {
-              tap();
-              setMode('signup');
-              setErrorMessage('');
-            }}
-            style={[styles.toggleBtn, mode === 'signup' && styles.toggleBtnActive]}
-          >
-            <Text style={[styles.toggleText, mode === 'signup' && styles.toggleTextActive]}>
-              Create Account
-            </Text>
+        {/* Top Navigation Row (Image 2 style with circular iOS back button) */}
+        <View style={styles.formTopBar}>
+          <Pressable onPress={handleBack} style={styles.backCircleBtn}>
+            <Feather name="chevron-left" size={24} color="#0F172A" />
           </Pressable>
-          <Pressable
-            onPress={() => {
-              tap();
-              setMode('signin');
-              setErrorMessage('');
-            }}
-            style={[styles.toggleBtn, mode === 'signin' && styles.toggleBtnActive]}
-          >
-            <Text style={[styles.toggleText, mode === 'signin' && styles.toggleTextActive]}>
-              Sign In
-            </Text>
-          </Pressable>
+
+          <View style={styles.stepProgressContainer}>
+            {[...Array(totalSteps)].map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.stepDot,
+                  i + 1 <= formStep && styles.stepDotActive,
+                ]}
+              />
+            ))}
+          </View>
         </View>
 
+        {/* Error Banner */}
         {errorMessage ? (
-          <View style={styles.errorBanner}>
-            <Feather name="alert-circle" size={17} color="#DC2626" />
-            <Text style={styles.errorText}>{errorMessage}</Text>
+          <View style={styles.minimalErrorBanner}>
+            <Feather name="alert-circle" size={16} color="#DC2626" />
+            <Text style={styles.minimalErrorText}>{errorMessage}</Text>
           </View>
         ) : null}
 
-        <View style={styles.formCard}>
-          {mode === 'signup' && (
-            <>
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>CHOSEN USERNAME</Text>
-                <View style={styles.inputWrap}>
-                  <Text style={styles.inputPrefix}>@</Text>
+        {/* Dynamic Animated Stepped View with horizontal slide transition */}
+        <Animated.View
+          style={[
+            styles.animatedStepContainer,
+            {
+              transform: isAnimating ? [{ translateX: slideAnim }] : undefined,
+              opacity: fadeAnim,
+            },
+          ]}
+        >
+          {mode === 'signin' ? (
+            /* ================= SIGN IN STEPS ================= */
+            formStep === 1 ? (
+              <View style={styles.stepBlock}>
+                <Text style={styles.steppedHeading}>What’s Your Email?</Text>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Email</Text>
                   <TextInput
-                    style={styles.textInputWithPrefix}
-                    placeholder="e.g. dev_sarah"
+                    style={[
+                      styles.cleanLineInput,
+                      inputFocused && styles.cleanLineInputFocused,
+                    ]}
+                    placeholder="hellobesnik@gmail.com"
                     placeholderTextColor="#94A3B8"
-                    value={username}
-                    onChangeText={setUsername}
+                    value={email}
+                    onChangeText={setEmail}
+                    onFocus={() => setInputFocused(true)}
+                    onBlur={() => setInputFocused(false)}
                     autoCapitalize="none"
                     autoCorrect={false}
+                    autoFocus
+                    keyboardType="email-address"
+                    returnKeyType="next"
+                    onSubmitEditing={handleContinue}
                   />
                 </View>
               </View>
+            ) : (
+              <View style={styles.stepBlock}>
+                <Text style={styles.steppedHeading}>Enter Password</Text>
+                <Text style={styles.steppedSubtitle}>
+                  Account for <Text style={{ color: '#7C3AED', fontWeight: '700' }}>{email}</Text>
+                </Text>
 
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>DISPLAY NAME (OPTIONAL)</Text>
-                <View style={styles.inputWrap}>
-                  <Feather name="user" size={17} color="#64748B" style={styles.fieldIcon} />
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Password</Text>
+                  <View
+                    style={[
+                      styles.passwordRowWrap,
+                      inputFocused && styles.cleanLineInputFocused,
+                    ]}
+                  >
+                    <TextInput
+                      style={styles.cleanLineInputFlex}
+                      placeholder="Your secret password"
+                      placeholderTextColor="#94A3B8"
+                      value={password}
+                      onChangeText={setPassword}
+                      onFocus={() => setInputFocused(true)}
+                      onBlur={() => setInputFocused(false)}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoFocus
+                      returnKeyType="done"
+                      onSubmitEditing={handleContinue}
+                    />
+                    <Pressable
+                      onPress={() => {
+                        tap();
+                        setShowPassword(!showPassword);
+                      }}
+                      style={styles.eyeIconBtn}
+                    >
+                      <Feather
+                        name={showPassword ? 'eye-off' : 'eye'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            )
+          ) : (
+            /* ================= SIGN UP STEPS ================= */
+            formStep === 1 ? (
+              <View style={styles.stepBlock}>
+                <Text style={styles.steppedHeading}>What’s Your Email?</Text>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Email</Text>
                   <TextInput
-                    style={styles.textInput}
-                    placeholder="e.g. Sarah Connor"
+                    style={[
+                      styles.cleanLineInput,
+                      inputFocused && styles.cleanLineInputFocused,
+                    ]}
+                    placeholder="hellobesnik@gmail.com"
                     placeholderTextColor="#94A3B8"
-                    value={displayName}
-                    onChangeText={setDisplayName}
-                    autoCapitalize="words"
+                    value={email}
+                    onChangeText={setEmail}
+                    onFocus={() => setInputFocused(true)}
+                    onBlur={() => setInputFocused(false)}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoFocus
+                    returnKeyType="next"
+                    onSubmitEditing={handleContinue}
                   />
                 </View>
               </View>
-            </>
+            ) : formStep === 2 ? (
+              <View style={styles.stepBlock}>
+                <Text style={styles.steppedHeading}>Pick a Username</Text>
+                <Text style={styles.steppedSubtitle}>
+                  This is how you will appear on the daily leagues.
+                </Text>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Username</Text>
+                  <View
+                    style={[
+                      styles.usernameRowWrap,
+                      inputFocused && styles.cleanLineInputFocused,
+                    ]}
+                  >
+                    <Text style={styles.usernamePrefix}>@</Text>
+                    <TextInput
+                      style={styles.cleanLineInputFlex}
+                      placeholder="e.g. dev_alex"
+                      placeholderTextColor="#94A3B8"
+                      value={username}
+                      onChangeText={setUsername}
+                      onFocus={() => setInputFocused(true)}
+                      onBlur={() => setInputFocused(false)}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      autoFocus
+                      returnKeyType="next"
+                      onSubmitEditing={handleContinue}
+                    />
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.stepBlock}>
+                <Text style={styles.steppedHeading}>Create Password</Text>
+                <Text style={styles.steppedSubtitle}>
+                  Must be at least 6 characters.
+                </Text>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Password</Text>
+                  <View
+                    style={[
+                      styles.passwordRowWrap,
+                      inputFocused && styles.cleanLineInputFocused,
+                    ]}
+                  >
+                    <TextInput
+                      style={styles.cleanLineInputFlex}
+                      placeholder="At least 6 characters"
+                      placeholderTextColor="#94A3B8"
+                      value={password}
+                      onChangeText={setPassword}
+                      onFocus={() => setInputFocused(true)}
+                      onBlur={() => setInputFocused(false)}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoFocus
+                      returnKeyType="done"
+                      onSubmitEditing={handleContinue}
+                    />
+                    <Pressable
+                      onPress={() => {
+                        tap();
+                        setShowPassword(!showPassword);
+                      }}
+                      style={styles.eyeIconBtn}
+                    >
+                      <Feather
+                        name={showPassword ? 'eye-off' : 'eye'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            )
           )}
 
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>
-              {mode === 'signup' ? 'EMAIL ADDRESS' : 'EMAIL OR USERNAME'}
-            </Text>
-            <View style={styles.inputWrap}>
-              <Feather name="mail" size={17} color="#64748B" style={styles.fieldIcon} />
-              <TextInput
-                style={styles.textInput}
-                placeholder={mode === 'signup' ? 'sarah@engineering.edu' : 'sarah@engineering.edu or @sarah'}
-                placeholderTextColor="#94A3B8"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </View>
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>PASSWORD</Text>
-            <View style={styles.inputWrap}>
-              <Feather name="lock" size={17} color="#64748B" style={styles.fieldIcon} />
-              <TextInput
-                style={styles.textInput}
-                placeholder="At least 6 characters"
-                placeholderTextColor="#94A3B8"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-              />
-              <Pressable
-                onPress={() => {
-                  tap();
-                  setShowPassword(!showPassword);
-                }}
-                style={styles.eyeBtn}
-              >
-                <Feather
-                  name={showPassword ? 'eye-off' : 'eye'}
-                  size={17}
-                  color="#64748B"
-                />
-              </Pressable>
-            </View>
-          </View>
-
+          {/* Primary iOS Apple Pill Button in Our Purple (Image 2 style) */}
           <Pressable
             disabled={loading}
-            onPress={handleSubmit}
+            onPress={handleContinue}
             style={({ pressed }) => [
-              styles.submitBtn,
-              pressed && styles.submitBtnPressed,
-              loading && styles.submitBtnDisabled,
+              styles.applePurplePill,
+              pressed && styles.pillPressed,
+              loading && styles.pillDisabled,
             ]}
           >
-            <Text style={styles.submitBtnText}>
+            <Text style={styles.applePurplePillText}>
               {loading
-                ? 'Connecting to Turso...'
-                : mode === 'signup'
-                ? 'Continue to Profile Setup'
-                : 'Sign In to KaiCode'}
+                ? 'Checking...'
+                : formStep < totalSteps
+                ? 'Continue'
+                : mode === 'signin'
+                ? 'Sign In'
+                : 'Create Account'}
             </Text>
-            <Feather name="arrow-right" size={18} color="#FFFFFF" strokeWidth={2.8} />
           </Pressable>
-        </View>
 
-        <View style={styles.demoSection}>
-          <Pressable onPress={handleDemoLogin} style={styles.demoBtn}>
-            <Feather name="zap" size={15} color="#7C3AED" />
-            <Text style={styles.demoBtnText}>Quick Test: Sign in as Alex Morgan</Text>
-          </Pressable>
-        </View>
+          {/* Bottom Mode Switcher (Image 2 style with red/coral or purple link) */}
+          <View style={styles.bottomSwitcherWrap}>
+            <Text style={styles.switcherQuestion}>
+              {mode === 'signin' ? 'Don’t have account? ' : 'Already have account? '}
+            </Text>
+            <Pressable onPress={toggleAuthMode}>
+              <Text style={styles.switcherAction}>
+                {mode === 'signin' ? 'Sign Up' : 'Sign In'}
+              </Text>
+            </Pressable>
+          </View>
+        </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  // ==========================================
+  // WELCOME VIEW STYLES (Image 1 Style)
+  // ==========================================
+  welcomeContainer: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#FAF7F2',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 32,
+    position: 'relative',
+    overflow: 'hidden',
   },
-  scrollContent: {
-    paddingHorizontal: 22,
-    paddingTop: 50,
-    paddingBottom: 40,
-    gap: 16,
+  welcomeBackgroundImage: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    width: '100%',
+    aspectRatio: 852 / 1846,
+    maxHeight: '100%',
+    ...(Platform.OS === 'web'
+      ? ({
+          objectFit: 'contain',
+          objectPosition: 'top center',
+        } as any)
+      : {}),
   },
-  brandRow: {
-    flexDirection: 'row',
+  welcomeArtworkSpacer: {
+    flex: 1.25,
+    minHeight: 280,
+  },
+  welcomeBottomContent: {
+    width: '100%',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
+    gap: 14,
+    zIndex: 10,
   },
-  logoMascot: {
-    width: 38,
-    height: 38,
-  },
-  brandName: {
-    fontSize: 26,
-    fontFamily: 'Nunito_800ExtraBold',
-    color: '#0F172A',
-    letterSpacing: -0.6,
-  },
-  heroBox: {
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 4,
-    marginBottom: 4,
-  },
-  heroTitle: {
-    fontSize: 24,
-    fontFamily: 'Nunito_800ExtraBold',
+  welcomeTitle: {
+    fontFamily: 'Nunito_900Black',
+    fontSize: 32,
     color: '#0F172A',
     textAlign: 'center',
+    letterSpacing: -0.8,
   },
-  heroSubtitle: {
-    fontSize: 13,
-    fontFamily: 'Inter_400Regular',
+  welcomeSubtitle: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 16,
     color: '#64748B',
     textAlign: 'center',
-    lineHeight: 19,
-    paddingHorizontal: 12,
+    lineHeight: 22,
+    paddingHorizontal: 20,
+    marginBottom: 6,
   },
-  togglePill: {
+  welcomeEmailBtn: {
+    backgroundColor: '#7C3AED',
+    height: 58,
+    borderRadius: 99,
+    width: '86%',
+    maxWidth: 325,
     flexDirection: 'row',
-    backgroundColor: '#E2E8F0',
-    borderRadius: 14,
-    padding: 4,
-    gap: 4,
-  },
-  toggleBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#7C3AED',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.32,
+    shadowRadius: 12,
+    elevation: 5,
   },
-  toggleBtnActive: {
+  welcomeEmailBtnText: {
+    fontFamily: 'Nunito_900Black',
+    fontSize: 18.5,
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
+  },
+  welcomeGuestBtn: {
     backgroundColor: '#FFFFFF',
-    shadowColor: '#0F172A',
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+    height: 58,
+    borderRadius: 99,
+    width: '86%',
+    maxWidth: 325,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  welcomeGuestBtnText: {
+    fontFamily: 'Nunito_800ExtraBold',
+    fontSize: 18,
+    color: '#0F172A',
+    letterSpacing: -0.2,
+  },
+  pillPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.985 }],
+  },
+  pillDisabled: {
+    opacity: 0.6,
+  },
+  demoLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+    paddingVertical: 6,
+  },
+  demoLinkText: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 12,
+    color: '#A78BFA',
+  },
+
+  // ==========================================
+  // FORM VIEW STYLES (Image 2 Style)
+  // ==========================================
+  formContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  formScrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: 28,
+    paddingTop: 48,
+    paddingBottom: 40,
+  },
+  formTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 32,
+  },
+  backCircleBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.04,
     shadowRadius: 4,
     elevation: 2,
   },
-  toggleText: {
-    fontFamily: 'Nunito_700Bold',
-    fontSize: 13,
-    color: '#64748B',
+  stepProgressContainer: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
   },
-  toggleTextActive: {
-    fontFamily: 'Nunito_800ExtraBold',
-    color: '#7C3AED',
+  stepDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#E2E8F0',
   },
-  errorBanner: {
+  stepDotActive: {
+    backgroundColor: '#7C3AED',
+    width: 18,
+  },
+  minimalErrorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 9,
-    backgroundColor: '#FEE2E2',
-    borderWidth: 1.5,
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
     borderColor: '#FECACA',
-    borderRadius: 14,
-    padding: 12,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 16,
   },
-  errorText: {
-    flex: 1,
+  minimalErrorText: {
     fontFamily: 'Inter_500Medium',
-    fontSize: 12,
+    fontSize: 13,
     color: '#DC2626',
-    lineHeight: 17,
+    flex: 1,
   },
-  formCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 22,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    borderBottomWidth: 4,
-    borderBottomColor: '#CBD5E1',
-    padding: 18,
-    gap: 14,
+  animatedStepContainer: {
+    width: '100%',
   },
-  fieldGroup: {
+  stepBlock: {
     gap: 6,
   },
-  fieldLabel: {
-    fontFamily: 'Nunito_800ExtraBold',
-    fontSize: 11,
-    letterSpacing: 0.6,
-    color: '#475569',
+  steppedHeading: {
+    fontFamily: 'Nunito_900Black',
+    fontSize: 34,
+    color: '#0F172A',
+    letterSpacing: -0.9,
+    marginBottom: 6,
   },
-  inputWrap: {
+  steppedSubtitle: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 15,
+    color: '#64748B',
+    lineHeight: 22,
+    marginBottom: 16,
+  },
+  inputGroup: {
+    marginTop: 20,
+    gap: 8,
+  },
+  inputLabel: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+    color: '#64748B',
+  },
+  cleanLineInput: {
+    height: 50,
+    borderWidth: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#CBD5E1',
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 19,
+    color: '#0F172A',
+    paddingHorizontal: 0,
+    paddingBottom: 6,
+    backgroundColor: 'transparent',
+    ...(Platform.OS === 'web'
+      ? ({
+          outlineStyle: 'none',
+          outline: 'none',
+          boxShadow: 'none',
+          borderTopStyle: 'none',
+          borderLeftStyle: 'none',
+          borderRightStyle: 'none',
+        } as any)
+      : {}),
+  },
+  cleanLineInputFocused: {
+    borderBottomColor: '#7C3AED',
+    borderBottomWidth: 2.5,
+    ...(Platform.OS === 'web'
+      ? ({
+          outlineStyle: 'none',
+          outline: 'none',
+          boxShadow: 'none',
+        } as any)
+      : {}),
+  },
+  passwordRowWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    borderRadius: 13,
-    paddingHorizontal: 12,
-    height: 48,
+    borderWidth: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#CBD5E1',
+    height: 50,
+    paddingBottom: 6,
+    backgroundColor: 'transparent',
+    ...(Platform.OS === 'web'
+      ? ({
+          outlineStyle: 'none',
+          outline: 'none',
+          borderTopStyle: 'none',
+          borderLeftStyle: 'none',
+          borderRightStyle: 'none',
+        } as any)
+      : {}),
   },
-  fieldIcon: {
-    marginRight: 9,
+  usernameRowWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#CBD5E1',
+    height: 50,
+    paddingBottom: 6,
+    backgroundColor: 'transparent',
+    ...(Platform.OS === 'web'
+      ? ({
+          outlineStyle: 'none',
+          outline: 'none',
+          borderTopStyle: 'none',
+          borderLeftStyle: 'none',
+          borderRightStyle: 'none',
+        } as any)
+      : {}),
   },
-  inputPrefix: {
+  usernamePrefix: {
     fontFamily: 'Nunito_800ExtraBold',
-    fontSize: 15,
+    fontSize: 18,
     color: '#7C3AED',
     marginRight: 4,
   },
-  textInput: {
+  cleanLineInputFlex: {
     flex: 1,
-    fontFamily: 'Inter_500Medium',
-    fontSize: 14,
-    color: '#0F172A',
     height: '100%',
-  },
-  textInputWithPrefix: {
-    flex: 1,
-    fontFamily: 'Nunito_700Bold',
-    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 19,
     color: '#0F172A',
-    height: '100%',
+    paddingHorizontal: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+    ...(Platform.OS === 'web'
+      ? ({
+          outlineStyle: 'none',
+          outline: 'none',
+          boxShadow: 'none',
+        } as any)
+      : {}),
   },
-  eyeBtn: {
+  eyeIconBtn: {
     padding: 6,
   },
-  submitBtn: {
+  applePurplePill: {
     backgroundColor: '#7C3AED',
-    borderRadius: 16,
-    borderBottomWidth: 4.5,
-    borderBottomColor: '#5B21B6',
-    height: 52,
+    height: 58,
+    borderRadius: 99,
+    width: '88%',
+    maxWidth: 335,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#7C3AED',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.32,
+    shadowRadius: 12,
+    elevation: 5,
+    marginTop: 32,
+  },
+  applePurplePillText: {
+    fontFamily: 'Nunito_900Black',
+    fontSize: 18.5,
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
+  },
+  bottomSwitcherWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    marginTop: 6,
-    shadowColor: '#7C3AED',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
+    marginTop: 20,
   },
-  submitBtnPressed: {
-    transform: [{ translateY: 2 }],
-    borderBottomWidth: 2,
+  switcherQuestion: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 15,
+    color: '#64748B',
   },
-  submitBtnDisabled: {
-    opacity: 0.6,
-  },
-  submitBtnText: {
+  switcherAction: {
     fontFamily: 'Nunito_800ExtraBold',
     fontSize: 15,
-    color: '#FFFFFF',
-    letterSpacing: 0.2,
-  },
-  demoSection: {
-    alignItems: 'center',
-    marginTop: 2,
-  },
-  demoBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    backgroundColor: '#F5F3FF',
-    borderWidth: 1.5,
-    borderColor: '#DDD6FE',
-    borderBottomWidth: 3,
-    borderBottomColor: '#C4B5FD',
-    borderRadius: 13,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-  },
-  demoBtnText: {
-    fontFamily: 'Nunito_700Bold',
-    fontSize: 12,
-    color: '#7C3AED',
+    color: '#EF4444',
   },
 });

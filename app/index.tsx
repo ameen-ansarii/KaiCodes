@@ -31,6 +31,7 @@ import {
   getUserProgress,
   recordLessonCompleted,
   getGlobalLeaderboard,
+  getTopicStats,
   LeaderboardRank,
   UserAccount,
   UserProfile,
@@ -125,7 +126,7 @@ function StrongButton({
   label,
   onPress,
   color = theme.purple,
-  textColor = theme.card,
+  textColor = '#FFFFFF',
   icon,
   secondary = false,
   disabled = false,
@@ -138,37 +139,35 @@ function StrongButton({
   secondary?: boolean;
   disabled?: boolean;
 }) {
-  const bevelColor = secondary
-    ? '#D1D5DB'
-    : color === theme.yellow
-    ? '#DDA900'
-    : color === theme.coral
-    ? '#D32F2F'
-    : color === theme.sky
-    ? '#0369A1'
-    : '#5B21B6';
-
   return (
     <Pressable
       testID={`button-${label.toLowerCase().replace(/\s/g, '-')}`}
+      disabled={disabled}
       onPress={() => {
-        if (disabled) return;
         tapFeedback();
         onPress();
       }}
       style={({ pressed }) => [
         styles.strongButton,
         {
-          backgroundColor: secondary ? theme.card : color,
-          borderColor: secondary ? '#E5E7EB' : color,
-          borderBottomColor: bevelColor,
-          borderBottomWidth: pressed ? 1.5 : 4.5,
-          transform: [{ translateY: pressed ? 3 : 0 }],
+          backgroundColor: secondary ? '#F8FAFC' : color,
+          borderWidth: secondary ? 1.5 : 0,
+          borderColor: secondary ? '#E2E8F0' : 'transparent',
+          shadowColor: secondary ? '#64748B' : color,
+          shadowOpacity: secondary ? 0.08 : 0.28,
         },
+        pressed && styles.buttonPressed,
         disabled && styles.disabledButton,
       ]}
     >
-      {icon ? <Feather name={icon} size={20} color={secondary ? color : textColor} strokeWidth={3} /> : null}
+      {icon ? (
+        <Feather
+          name={icon}
+          size={22}
+          color={secondary ? color : textColor}
+          strokeWidth={2.4}
+        />
+      ) : null}
       <Text style={[styles.buttonLabel, { color: secondary ? color : textColor }]}>{label}</Text>
     </Pressable>
   );
@@ -320,35 +319,6 @@ function useAppUpdates() {
   const [updateReady, setUpdateReady] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  const check = useCallback(async () => {
-    if (__DEV__ || !Updates.isEnabled) {
-      setStatusMessage('Live OTA updates active on installed builds.');
-      return;
-    }
-    try {
-      setChecking(true);
-      setStatusMessage('Checking for live updates...');
-      const result = await Updates.checkForUpdateAsync();
-      if (result.isAvailable) {
-        setUpdateAvailable(true);
-        setStatusMessage('New curriculum update found! Downloading...');
-        setDownloading(true);
-        await Updates.fetchUpdateAsync();
-        setDownloading(false);
-        setUpdateReady(true);
-        setStatusMessage('Update ready! Tap below to restart.');
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      } else {
-        setStatusMessage('Your app is up to date with the latest reps!');
-      }
-    } catch (err: any) {
-      console.warn('Update check failed:', err);
-      setStatusMessage('Could not connect to update service.');
-    } finally {
-      setChecking(false);
-    }
-  }, []);
-
   const reload = useCallback(async () => {
     try {
       await Updates.reloadAsync();
@@ -357,13 +327,40 @@ function useAppUpdates() {
     }
   }, []);
 
-  useEffect(() => {
-    if (!__DEV__ && Updates.isEnabled) {
-      const timer = setTimeout(() => {
-        void check();
-      }, 2500);
-      return () => clearTimeout(timer);
+  const check = useCallback(async () => {
+    if (!Updates.isEnabled) return;
+    try {
+      setChecking(true);
+      const result = await Updates.checkForUpdateAsync();
+      if (result.isAvailable) {
+        setUpdateAvailable(true);
+        setStatusMessage('Update found! Downloading...');
+        setDownloading(true);
+        await Updates.fetchUpdateAsync();
+        setDownloading(false);
+        setUpdateReady(true);
+        setStatusMessage('Update ready ✓');
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // Show "Update ready" for 2s then reload — gives user feedback before restart
+        setTimeout(() => {
+          void Updates.reloadAsync().catch(() => {});
+        }, 2000);
+      } else {
+        setStatusMessage(null);
+      }
+    } catch (err: any) {
+      console.warn('Update check failed:', err);
+      setStatusMessage(null);
+    } finally {
+      setChecking(false);
     }
+  }, []);
+
+  useEffect(() => {
+    if (!Updates.isEnabled) return;
+    // Delay check so app fully renders before doing any network work
+    const timer = setTimeout(() => { void check(); }, 3000);
+    return () => clearTimeout(timer);
   }, [check]);
 
   return {
@@ -692,18 +689,47 @@ function Home({
   onLeaderboard: () => void;
   onNav: (tab: Tab) => void;
 }) {
-  const nextLesson = useMemo(() => {
-    const all = getAllTopics().flatMap((t) => t.lessons);
-    const completed = Array.isArray(progress?.completedLessons) ? progress.completedLessons : [];
-    return all.find((l) => !completed.includes(l.id)) || all[0];
-  }, [progress]);
+  const currentTopic = useMemo(() => {
+    const primarySubjectId = profile?.prioritySubjects?.[0];
+    const subjects = getAllSubjects();
+    const matchedSubject = subjects.find((s) => s.id === primarySubjectId) || subjects[0];
+    return matchedSubject.topics[0] || getAllTopics()[0];
+  }, [profile]);
 
   const streak = progress?.streakCount || 1;
   const repsCompleted = Array.isArray(progress?.completedLessons) ? progress.completedLessons.length : 0;
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const isGoalCompletedToday = useMemo(() => {
+    return progress?.lastActiveDate === todayStr && repsCompleted > 0;
+  }, [progress?.lastActiveDate, todayStr, repsCompleted]);
+
+  const nextLesson = useMemo(() => {
+    const completed = Array.isArray(progress?.completedLessons) ? progress.completedLessons : [];
+    // Prioritize next uncompleted lesson in the user's active topic
+    const topicLesson = currentTopic.lessons.find((l) => !completed.includes(l.id));
+    if (topicLesson) return topicLesson;
+
+    // Otherwise fallback to next uncompleted lesson in any topic
+    const all = getAllTopics().flatMap((t) => t.lessons);
+    return all.find((l) => !completed.includes(l.id)) || all[0];
+  }, [progress, currentTopic]);
+
+  const topicStats = useMemo(() => {
+    const lessonIds = currentTopic.lessons.map((l) => l.id);
+    const completed = Array.isArray(progress?.completedLessons) ? progress.completedLessons : [];
+    return getTopicStats(lessonIds, completed, currentTopic.totalLessons);
+  }, [currentTopic, progress]);
+
+  // Current day of week: 0 = Mon, 6 = Sun
+  const currentDayOfWeek = useMemo(() => {
+    return (new Date().getDay() + 6) % 7;
+  }, []);
 
   return (
     <ScreenShell bottomNav activeTab="home">
       <HeaderStats onProfile={onProfile} xp={progress?.xp || 0} streak={streak} isUpdating={isUpdating} />
+
+      {/* Greeting Banner */}
       <View style={styles.greetingBanner}>
         <View style={styles.greetingCopy}>
           <Text style={styles.greeting}>Good morning, {user?.displayName || 'Engineer'}</Text>
@@ -717,80 +743,131 @@ function Home({
             <Text style={styles.streakNumberInline}>{streak}-DAY STREAK</Text>
           </View>
         </View>
-        <Mascot pose="speedrun" size={118} style={{ marginBottom: -8 }} />
+        <Mascot pose={isGoalCompletedToday ? 'accepted' : 'speedrun'} size={118} style={{ marginBottom: -8 }} />
       </View>
-      <View style={styles.dailyCard}>
-        <View style={styles.dailyCardTop}>
-          <View style={styles.tag}>
-            <Text style={styles.tagText}>TODAY’S REP</Text>
+
+      {/* BLOCK 1: Dynamic Daily Mission Card */}
+      {!isGoalCompletedToday ? (
+        <View style={styles.dailyCard}>
+          <View style={styles.dailyCardTop}>
+            <View style={styles.tag}>
+              <Text style={styles.tagText}>TODAY’S REP</Text>
+            </View>
+            <Text style={styles.dailyMinutes}>~ {nextLesson.estimatedMinutes} MIN</Text>
           </View>
-          <Text style={styles.dailyMinutes}>~ {nextLesson.estimatedMinutes} MIN</Text>
+          <Text style={styles.dailyTitle}>{nextLesson.title}</Text>
+          <Text style={styles.dailyDescription}>{nextLesson.subtitle}</Text>
+          <View style={styles.dailyMetaRow}>
+            <View style={styles.metaItem}>
+              <Feather name="bar-chart-2" size={15} color={theme.sky} />
+              <Text style={styles.metaText}>{nextLesson.difficulty.toUpperCase()}</Text>
+            </View>
+            <View style={styles.metaItem}>
+              <Feather name="layers" size={15} color={theme.sky} />
+              <Text style={styles.metaText}>{currentTopic.title.toUpperCase()}</Text>
+            </View>
+            <View style={styles.xpChip}>
+              <Text style={styles.xpChipText}>+40 XP</Text>
+            </View>
+          </View>
+          <StrongButton
+            label="Solve today’s problem"
+            onPress={() => onPractice(nextLesson.id)}
+            color={theme.purple}
+            icon="arrow-up-right"
+          />
         </View>
-        <Text style={styles.dailyTitle}>{nextLesson.title}</Text>
-        <Text style={styles.dailyDescription}>{nextLesson.subtitle}</Text>
-        <View style={styles.dailyMetaRow}>
-          <View style={styles.metaItem}>
-            <Feather name="bar-chart-2" size={16} color={theme.sky} />
-            <Text style={styles.metaText}>{nextLesson.difficulty}</Text>
+      ) : (
+        <View style={[styles.dailyCard, styles.dailyCardDone]}>
+          <View style={styles.dailyCardTop}>
+            <View style={styles.tagDone}>
+              <Text style={styles.tagDoneText}>DAILY GOAL CRUSHED</Text>
+            </View>
+            <Text style={styles.dailyMinutesDone}>STREAK SECURED</Text>
           </View>
-          <View style={styles.metaItem}>
-            <Feather name="layers" size={16} color={theme.sky} />
-            <Text style={styles.metaText}>{nextLesson.topicId.split('-')[0].toUpperCase()}</Text>
-          </View>
-          <View style={styles.xpChip}>
-            <Text style={styles.xpChipText}>+40 XP</Text>
-          </View>
-        </View>
-        <StrongButton
-          label="Solve today’s problem"
-          onPress={() => onPractice(nextLesson.id)}
-          color={theme.purple}
-          icon="arrow-up-right"
-        />
-      </View>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Your momentum</Text>
-        <Pressable onPress={onPaywall}>
-          <Text style={styles.seeAll}>
-            See insights <Feather name="chevron-right" size={14} color={theme.sky} />
-          </Text>
-        </Pressable>
-      </View>
-      <View style={styles.momentumCard}>
-        <View style={styles.momentumNumber}>
-          <Text style={styles.momentumBig}>{Math.min(7, repsCompleted)}</Text>
-          <Text style={styles.momentumUnit}>/ 7</Text>
-          <Text style={styles.momentumCaption}>reps this week</Text>
-        </View>
-        <View style={styles.weekBars}>
-          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => (
-            <View key={`${day}-${index}`} style={styles.weekDay}>
-              <View
-                style={[
-                  styles.weekBarTrack,
-                  index < Math.min(7, repsCompleted) && styles.weekBarDone,
-                  index === Math.min(6, repsCompleted) && styles.weekBarToday,
-                ]}
-              />
-              <Text style={[styles.weekDayText, index === Math.min(6, repsCompleted) && styles.weekDayToday]}>
-                {day}
+          <View style={styles.doneBodyRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.dailyTitle}>You're Locked In!</Text>
+              <Text style={styles.dailyDescription}>
+                You completed today's engineering rep. Keep this momentum going tomorrow.
               </Text>
             </View>
-          ))}
+            <Mascot pose="accepted" size={78} />
+          </View>
+          <StrongButton
+            label="Practice bonus rep"
+            onPress={() => onPractice(nextLesson.id)}
+            secondary
+            color={theme.purple}
+            icon="zap"
+          />
         </View>
-      </View>
-      <View style={styles.unlockRow}>
-        <View style={styles.unlockIcon}>
-          <Feather name="lock" size={16} color={theme.purpleDark} />
+      )}
+
+      {/* BLOCK 2: Active Track Card (Bridge to Path) */}
+      <View style={styles.activeTrackCard}>
+        <View style={styles.activeTrackHeader}>
+          <View style={[styles.activeTrackBadge, { backgroundColor: currentTopic.accentColor }]}>
+            <Feather name={currentTopic.icon as any} size={18} color="#FFFFFF" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.activeTrackEyebrow}>ACTIVE TRACK</Text>
+            <Text style={styles.activeTrackTitle}>{currentTopic.title}</Text>
+          </View>
+          <Text style={styles.activeTrackCount}>
+            {topicStats.completedCount} / {topicStats.totalCount}
+          </Text>
         </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.unlockTitle}>Unlock personalized insights</Text>
-          <Text style={styles.unlockSub}>See where your patterns are getting stronger.</Text>
+        <Text style={styles.activeTrackDesc}>{currentTopic.description}</Text>
+        <View style={styles.activeTrackProgressWrap}>
+          <ProgressBar value={topicStats.percentage} color={currentTopic.accentColor} height={8} />
+          <Text style={styles.activeTrackPercentText}>{Math.round(topicStats.percentage * 100)}% COMPLETE</Text>
         </View>
-        <Pressable onPress={onPaywall}>
-          <Feather name="chevron-right" size={18} color={theme.purpleDark} />
+        <Pressable onPress={onCourse} style={styles.activeTrackFooterBtn}>
+          <Text style={styles.activeTrackFooterText}>Continue on winding path</Text>
+          <Feather name="chevron-right" size={16} color={theme.purple} />
         </Pressable>
       </View>
+
+      {/* BLOCK 3: Weekly Pulse & League Snapshot */}
+      <View style={styles.weeklyPulseCard}>
+        <View style={styles.pulseHeader}>
+          <Text style={styles.sectionTitle}>Weekly Pulse</Text>
+          <Text style={styles.pulseSubtitle}>{streak}-day streak active</Text>
+        </View>
+        <View style={styles.weekBars}>
+          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => {
+            const isToday = index === currentDayOfWeek;
+            const isDone = index < Math.min(7, streak) || (isToday && isGoalCompletedToday);
+            return (
+              <View key={`${day}-${index}`} style={styles.weekDay}>
+                <View
+                  style={[
+                    styles.weekBarTrack,
+                    isDone && styles.weekBarDone,
+                    isToday && styles.weekBarToday,
+                  ]}
+                />
+                <Text style={[styles.weekDayText, isToday && styles.weekDayToday]}>
+                  {day}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+
+      <Pressable onPress={onLeaderboard} style={styles.leagueSnapshotCard}>
+        <View style={styles.leagueIconWrap}>
+          <Feather name="award" size={22} color="#7C3AED" strokeWidth={2.5} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.leagueCardEyebrow}>LEAGUES</Text>
+          <Text style={styles.leagueCardTitle}>Silver League · Rank #4</Text>
+          <Text style={styles.leagueCardSub}>Top 5 engineers advance to Gold</Text>
+        </View>
+        <Feather name="chevron-right" size={18} color="#64748B" />
+      </Pressable>
     </ScreenShell>
   );
 }
@@ -1900,12 +1977,25 @@ function KaiCodeApp() {
 
   const handleOnboardingComplete = async () => {
     if (currentUser) {
-      const [profile, progress] = await Promise.all([
+      const [updatedSession, profile, progress] = await Promise.all([
+        getStoredSession(),
         getUserProfile(currentUser.id),
         getUserProgress(currentUser.id),
       ]);
+      if (updatedSession) {
+        setCurrentUser(updatedSession);
+      }
       setUserProfile(profile);
       setUserProgress(progress);
+
+      const primaryTrack = profile?.prioritySubjects?.[0];
+      if (primaryTrack === 'system-design') {
+        setSelectedTopic('system-caching');
+      } else if (primaryTrack === 'core-cs') {
+        setSelectedTopic('os-fundamentals');
+      } else {
+        setSelectedTopic('arrays-and-hashing');
+      }
     }
     setActiveTab('home');
     setScreen('home');
@@ -2069,11 +2159,11 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.background },
   scrollContent: { paddingHorizontal: 20, gap: 20 },
   fixedContent: { flex: 1, paddingHorizontal: 20 },
-  strongButton: { minHeight: 54, borderRadius: 16, borderWidth: 1.5, borderBottomWidth: 4.5, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 9, paddingHorizontal: 20 },
-  buttonPressed: { transform: [{ translateY: 3 }], borderBottomWidth: 1.5 },
+  strongButton: { height: 58, borderRadius: 99, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, paddingHorizontal: 26, shadowOffset: { width: 0, height: 5 }, shadowRadius: 12, elevation: 5 },
+  buttonPressed: { opacity: 0.88, transform: [{ scale: 0.985 }] },
   disabledButton: { opacity: 0.5 },
-  buttonLabel: { fontFamily: 'Nunito_800ExtraBold', fontSize: 16, letterSpacing: 0.8, textTransform: 'uppercase' },
-  iconButton: { width: 44, height: 44, borderRadius: 15, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: theme.line, borderBottomWidth: 3.5, borderBottomColor: '#CBD5E1' },
+  buttonLabel: { fontFamily: 'Nunito_900Black', fontSize: 18.5, letterSpacing: -0.2 },
+  iconButton: { width: 44, height: 44, borderRadius: 99, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
   progressTrack: { borderRadius: 99, backgroundColor: theme.line, overflow: 'hidden' },
   progressFill: { borderRadius: 99 },
   splash: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.purple },
@@ -2351,17 +2441,79 @@ const styles = StyleSheet.create({
   streakNumber: { color: theme.ink, fontFamily: 'Nunito_900Black', fontSize: 22 },
   streakLabel: { color: '#7C3AED', fontFamily: 'Nunito_800ExtraBold', fontSize: 10, letterSpacing: 0.4 },
   dailyCard: { backgroundColor: theme.card, borderRadius: 24, borderWidth: 2, borderBottomWidth: 5, borderBottomColor: '#CBD5E1', borderColor: theme.line, padding: 20, gap: 14 },
+  dailyCardDone: { borderColor: '#A7F3D0', borderBottomColor: '#059669', backgroundColor: '#F0FDF4' },
   dailyCardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   tag: { borderRadius: 8, paddingHorizontal: 9, paddingVertical: 6, backgroundColor: '#F5F3FF' },
   tagText: { color: '#7C3AED', fontFamily: 'Nunito_800ExtraBold', fontSize: 10, letterSpacing: 0.7 },
+  tagDone: { backgroundColor: '#DCFCE7', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5 },
+  tagDoneText: { color: '#16A34A', fontFamily: 'Nunito_800ExtraBold', fontSize: 10, letterSpacing: 0.7 },
   dailyMinutes: { color: theme.mutedForeground, fontFamily: 'Nunito_800ExtraBold', fontSize: 11, letterSpacing: 0.8 },
-  dailyTitle: { color: theme.ink, fontFamily: 'Nunito_900Black', fontSize: 30, letterSpacing: -0.8 },
+  dailyMinutesDone: { color: '#16A34A', fontFamily: 'Nunito_800ExtraBold', fontSize: 11, letterSpacing: 0.8 },
+  dailyTitle: { color: theme.ink, fontFamily: 'Nunito_900Black', fontSize: 28, letterSpacing: -0.8 },
   dailyDescription: { color: theme.mutedForeground, fontFamily: 'Inter_400Regular', fontSize: 14, lineHeight: 21, marginTop: -6 },
   dailyMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 15 },
+  doneBodyRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginVertical: 4 },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   metaText: { color: theme.navy, fontFamily: 'Inter_600SemiBold', fontSize: 12 },
   xpChip: { marginLeft: 'auto', backgroundColor: theme.yellow, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 6, borderWidth: 1, borderBottomWidth: 2.5, borderColor: '#DDA900' },
   xpChipText: { color: theme.ink, fontFamily: 'Nunito_800ExtraBold', fontSize: 12 },
+  activeTrackCard: {
+    backgroundColor: theme.card,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderBottomWidth: 4.5,
+    borderBottomColor: '#CBD5E1',
+    borderColor: theme.line,
+    padding: 18,
+    gap: 12,
+  },
+  activeTrackHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  activeTrackBadge: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  activeTrackEyebrow: { fontFamily: 'Nunito_800ExtraBold', fontSize: 10, color: '#64748B', letterSpacing: 0.7 },
+  activeTrackTitle: { fontFamily: 'Nunito_800ExtraBold', fontSize: 17, color: theme.ink, letterSpacing: -0.3 },
+  activeTrackCount: { fontFamily: 'Nunito_800ExtraBold', fontSize: 13, color: '#64748B' },
+  activeTrackDesc: { fontFamily: 'Inter_400Regular', fontSize: 13, color: '#64748B', lineHeight: 18 },
+  activeTrackProgressWrap: { gap: 6 },
+  activeTrackPercentText: { fontFamily: 'Nunito_800ExtraBold', fontSize: 10, color: '#64748B', letterSpacing: 0.5 },
+  activeTrackFooterBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  activeTrackFooterText: { fontFamily: 'Nunito_800ExtraBold', fontSize: 13, color: theme.purple },
+  weeklyPulseCard: {
+    backgroundColor: theme.card,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderBottomWidth: 4,
+    borderBottomColor: '#CBD5E1',
+    borderColor: theme.line,
+    padding: 18,
+    gap: 14,
+  },
+  pulseHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  pulseSubtitle: { fontFamily: 'Nunito_800ExtraBold', fontSize: 12, color: theme.purple },
+  leagueSnapshotCard: {
+    backgroundColor: '#F5F3FF',
+    borderRadius: 18,
+    borderWidth: 1.5,
+    borderBottomWidth: 3.5,
+    borderColor: '#DDD6FE',
+    borderBottomColor: '#7C3AED',
+    padding: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+  },
+  leagueIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  leagueCardEyebrow: { fontFamily: 'Nunito_800ExtraBold', fontSize: 10, color: '#7C3AED', letterSpacing: 0.6 },
+  leagueCardTitle: { fontFamily: 'Nunito_800ExtraBold', fontSize: 15, color: '#1E1B4B' },
+  leagueCardSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#6D28D9', marginTop: 1 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 },
   sectionTitle: { fontFamily: 'Nunito_800ExtraBold', color: theme.ink, fontSize: 20, letterSpacing: -0.4 },
   seeAll: { color: theme.purple, fontFamily: 'Nunito_800ExtraBold', fontSize: 12 },

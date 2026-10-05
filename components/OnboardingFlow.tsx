@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { saveOnboardingProfile, UserAccount } from '@/services/turso';
+import { saveOnboardingProfile, updateUserAvatar, UserAccount } from '@/services/turso';
 
 interface OnboardingFlowProps {
   user: UserAccount;
@@ -25,9 +25,9 @@ const AVATAR_OPTIONS = [
 ];
 
 const TRACK_OPTIONS = [
-  { id: 'dsa', title: 'Data Structures & Algorithms', desc: 'Arrays, Two Pointers, Trees, Graphs, DP', icon: 'code' as const, color: '#7C3AED' },
-  { id: 'core-cs', title: 'Core Computer Science', desc: 'Operating Systems, DBMS, Computer Networks', icon: 'cpu' as const, color: '#EAB308' },
-  { id: 'system-design', title: 'System Design', desc: 'Distributed Caching, Microservices, Scalability', icon: 'layers' as const, color: '#0284C7' },
+  { id: 'dsa', code: 'DSA', title: 'Data Structures and Algorithms', desc: 'Arrays, Two Pointers, Trees, Graphs, DP', color: '#7C3AED' },
+  { id: 'core-cs', code: 'CORE CS', title: 'Core Computer Science', desc: 'Operating Systems, DBMS, Computer Networks', color: '#B45309' },
+  { id: 'system-design', code: 'SYSTEM', title: 'System Design', desc: 'Distributed Caching, Microservices, Scalability', color: '#0284C7' },
 ];
 
 const EXPERIENCE_OPTIONS = [
@@ -37,10 +37,10 @@ const EXPERIENCE_OPTIONS = [
 ];
 
 const TIME_OPTIONS = [
-  { minutes: 5, label: '5 min / day', tag: 'Casual daily warmup', icon: 'coffee' as const },
-  { minutes: 10, label: '10 min / day', tag: 'Recommended sweet spot', icon: 'sun' as const, isPopular: true },
-  { minutes: 15, label: '15 min / day', tag: 'Serious interview prep', icon: 'zap' as const },
-  { minutes: 20, label: '20 min / day', tag: 'Beast mode mastery', icon: 'award' as const },
+  { minutes: 5, label: '5 min / day', tag: 'Casual daily warmup' },
+  { minutes: 10, label: '10 min / day', tag: 'Recommended sweet spot', isPopular: true },
+  { minutes: 15, label: '15 min / day', tag: 'Serious interview prep' },
+  { minutes: 20, label: '20 min / day', tag: 'Deep mastery' },
 ];
 
 export function OnboardingFlow({ user, onComplete }: OnboardingFlowProps) {
@@ -78,6 +78,7 @@ export function OnboardingFlow({ user, onComplete }: OnboardingFlowProps) {
     }
 
     setSaving(true);
+    await updateUserAvatar(user.id, selectedAvatar);
     await saveOnboardingProfile({
       userId: user.id,
       experienceLevel: selectedExperience,
@@ -185,8 +186,8 @@ export function OnboardingFlow({ user, onComplete }: OnboardingFlowProps) {
                       isSelected && styles.optionCardSelected,
                     ]}
                   >
-                    <View style={[styles.trackIconBox, { backgroundColor: track.color }]}>
-                      <Feather name={track.icon as any} size={22} color="#FFFFFF" />
+                    <View style={[styles.trackCodeBadge, { backgroundColor: track.color }]}>
+                      <Text style={styles.trackCodeText}>{track.code}</Text>
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.optionTitle, isSelected && styles.optionTitleSelected]}>
@@ -264,8 +265,13 @@ export function OnboardingFlow({ user, onComplete }: OnboardingFlowProps) {
                       isSelected && styles.optionCardSelected,
                     ]}
                   >
-                    <View style={[styles.timeIconWrap, isSelected && styles.timeIconWrapSelected]}>
-                      <Feather name={time.icon} size={20} color={isSelected ? '#7C3AED' : '#64748B'} />
+                    <View style={[styles.timeBadgeWrap, isSelected && styles.timeBadgeWrapSelected]}>
+                      <Text style={[styles.timeBadgeNumber, isSelected && styles.timeBadgeNumberSelected]}>
+                        {time.minutes}
+                      </Text>
+                      <Text style={[styles.timeBadgeUnit, isSelected && styles.timeBadgeUnitSelected]}>
+                        MIN
+                      </Text>
                     </View>
                     <View style={{ flex: 1 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -474,23 +480,51 @@ const styles = StyleSheet.create({
     borderBottomColor: '#5B21B6',
     backgroundColor: '#F5F3FF',
   },
-  trackIconBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+  trackCodeBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
+    minWidth: 54,
   },
-  timeIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
+  trackCodeText: {
+    color: '#FFFFFF',
+    fontFamily: 'Nunito_800ExtraBold',
+    fontSize: 11,
+    letterSpacing: 0.6,
+  },
+  timeBadgeWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
   },
-  timeIconWrapSelected: {
-    backgroundColor: '#EDE9FE',
+  timeBadgeWrapSelected: {
+    backgroundColor: '#F5F3FF',
+    borderColor: '#DDD6FE',
+  },
+  timeBadgeNumber: {
+    fontFamily: 'Nunito_900Black',
+    fontSize: 16,
+    color: '#475569',
+    lineHeight: 18,
+  },
+  timeBadgeNumberSelected: {
+    color: '#7C3AED',
+  },
+  timeBadgeUnit: {
+    fontFamily: 'Nunito_800ExtraBold',
+    fontSize: 9,
+    color: '#64748B',
+    letterSpacing: 0.5,
+  },
+  timeBadgeUnitSelected: {
+    color: '#7C3AED',
   },
   optionTitle: {
     fontFamily: 'Nunito_800ExtraBold',
@@ -558,25 +592,32 @@ const styles = StyleSheet.create({
   },
   continueBtn: {
     backgroundColor: '#7C3AED',
-    borderRadius: 16,
-    borderBottomWidth: 4.5,
-    borderBottomColor: '#5B21B6',
-    height: 52,
+    borderRadius: 99,
+    height: 58,
+    width: '88%',
+    maxWidth: 340,
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 10,
+    shadowColor: '#7C3AED',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.32,
+    shadowRadius: 12,
+    elevation: 5,
   },
   continueBtnPressed: {
-    transform: [{ translateY: 2 }],
-    borderBottomWidth: 2,
+    opacity: 0.88,
+    transform: [{ scale: 0.985 }],
   },
   continueBtnDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
   continueBtnText: {
-    fontFamily: 'Nunito_800ExtraBold',
-    fontSize: 15,
+    fontFamily: 'Nunito_900Black',
+    fontSize: 18.5,
     color: '#FFFFFF',
+    letterSpacing: -0.2,
   },
 });

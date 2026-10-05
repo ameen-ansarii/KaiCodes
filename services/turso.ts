@@ -28,13 +28,9 @@ export interface UserProgress {
   unlockedNodes: string[];
 }
 
-const DEFAULT_TURSO_URL = 'https://kaicodes-lolopolo.aws-ap-south-1.turso.io';
-const DEFAULT_TURSO_AUTH_TOKEN =
-  'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTA5NTMxNzUsImlkIjoiMDFhMGZkMWYtZTYwMS03MWY3LWE4ZWEtOTgzOGU1ZjBiOGMxIiwia2lkIjoicS1fSklfbFBTZVpSN1gtSDVsRzNIMnUxMmdVQlI0cmw3NHBwNTNNSTVqOCIsInJpZCI6ImNhNDFiMTM5LTJlYzMtNDZiOS1hNWNjLWI1Y2U2ODJiMzI5YiJ9.lY2nM9WwXC-_MBxYOTFs6x2lgE00UYOh7BMUP66BgBXhcLev-2h6pPCRlNVpux4yAaa-HTMQWsfw4Mf_730yBg';
-
-const rawUrl = process.env.EXPO_PUBLIC_TURSO_DATABASE_URL || DEFAULT_TURSO_URL;
+const rawUrl = process.env.EXPO_PUBLIC_TURSO_DATABASE_URL || '';
 const TURSO_URL = rawUrl.startsWith('libsql://') ? rawUrl.replace('libsql://', 'https://') : rawUrl;
-const TURSO_AUTH_TOKEN = process.env.EXPO_PUBLIC_TURSO_AUTH_TOKEN || DEFAULT_TURSO_AUTH_TOKEN;
+const TURSO_AUTH_TOKEN = process.env.EXPO_PUBLIC_TURSO_AUTH_TOKEN || '';
 
 const isTursoConfigured = Boolean(TURSO_URL && TURSO_AUTH_TOKEN);
 
@@ -176,7 +172,30 @@ export async function saveSession(user: UserAccount | null) {
   }
 }
 
+export function isGuestUser(userId?: string | null): boolean {
+  return Boolean(userId && (userId.startsWith('guest_') || userId === 'guest'));
+}
+
 function simpleHash(password: string): string {
+  // Deterministic 64-bit salted hash for secure client verification
+  const salt = 'kaicode_salt_2026_';
+  const str = salt + password;
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const combined = (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+  return `kc_${combined}`;
+}
+
+function legacyHash(password: string): string {
   let hash = 0;
   for (let i = 0; i < password.length; i++) {
     const char = password.charCodeAt(i);
@@ -184,6 +203,36 @@ function simpleHash(password: string): string {
     hash |= 0;
   }
   return `hash_${Math.abs(hash)}`;
+}
+
+export async function createGuestUser(): Promise<UserAccount> {
+  const existingSession = await getStoredSession();
+  if (existingSession && isGuestUser(existingSession.id)) {
+    return existingSession;
+  }
+
+  const guestId = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const guestUser: UserAccount = {
+    id: guestId,
+    email: `${guestId}@kaicode.local`,
+    username: `coder_${Math.random().toString(36).slice(2, 6)}`,
+    displayName: 'Guest Engineer',
+    avatarPose: 'accepted',
+    createdAt: Date.now(),
+  };
+
+  const initialProgress: UserProgress = {
+    userId: guestId,
+    xp: 0,
+    streakCount: 1,
+    lastActiveDate: new Date().toISOString().split('T')[0],
+    completedLessons: [],
+    unlockedNodes: ['two-sum'],
+  };
+
+  await saveUserProgress(initialProgress);
+  await saveSession(guestUser);
+  return guestUser;
 }
 
 export async function registerUser({
@@ -206,6 +255,38 @@ export async function registerUser({
   const passwordHash = simpleHash(password);
   const now = Date.now();
 
+  // Check if user was previously playing as guest to migrate their earned stats
+  const priorSession = await getStoredSession();
+  let initialProgress: UserProgress = {
+    userId,
+    xp: 0,
+    streakCount: 1,
+    lastActiveDate: new Date().toISOString().split('T')[0],
+    completedLessons: [],
+    unlockedNodes: ['two-sum'],
+  };
+
+  if (priorSession && isGuestUser(priorSession.id)) {
+    try {
+      const guestProgress = await getUserProgress(priorSession.id);
+      if (guestProgress && (guestProgress.xp > 0 || guestProgress.completedLessons.length > 0)) {
+        initialProgress = {
+          ...guestProgress,
+          userId,
+        };
+      }
+      const guestProfile = await getUserProfile(priorSession.id);
+      if (guestProfile) {
+        await saveOnboardingProfile({
+          ...guestProfile,
+          userId,
+        });
+      }
+    } catch (migErr) {
+      console.warn('Guest progress migration warning:', migErr);
+    }
+  }
+
   const newUser: UserAccount = {
     id: userId,
     email: cleanEmail,
@@ -226,8 +307,15 @@ export async function registerUser({
 
       await executeTurso({
         sql: `INSERT INTO user_progress (user_id, xp, streak_count, last_active_date, completed_lessons, unlocked_nodes)
-              VALUES (?, 0, 1, ?, '[]', '["arrays-1"]')`,
-        args: [userId, new Date().toISOString().split('T')[0]],
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [
+          userId,
+          initialProgress.xp,
+          initialProgress.streakCount,
+          initialProgress.lastActiveDate,
+          JSON.stringify(initialProgress.completedLessons),
+          JSON.stringify(initialProgress.unlockedNodes),
+        ],
       });
     } catch (err: any) {
       if (err?.message?.includes('UNIQUE')) {
@@ -242,6 +330,7 @@ export async function registerUser({
     const usersMap: Record<string, { user: UserAccount; passwordHash: string }> = rawUsers ? JSON.parse(rawUsers) : {};
     usersMap[cleanEmail] = { user: newUser, passwordHash };
     await AsyncStorage.setItem(USERS_LOCAL_STORAGE_KEY, JSON.stringify(usersMap));
+    await saveUserProgress(initialProgress);
     await saveSession(newUser);
   } catch (storageErr) {
     console.error('Storage error:', storageErr);
@@ -258,7 +347,8 @@ export async function loginUser({
   password: string;
 }): Promise<{ user?: UserAccount; error?: string }> {
   const query = emailOrUsername.trim().toLowerCase();
-  const passwordHash = simpleHash(password);
+  const currentPasswordHash = simpleHash(password);
+  const oldPasswordHash = legacyHash(password);
 
   if (isTursoConfigured) {
     try {
@@ -273,7 +363,8 @@ export async function loginUser({
 
       if (result.rows.length > 0) {
         const row = result.rows[0];
-        if (row.password_hash === passwordHash) {
+        const storedHash = String(row.password_hash || '');
+        if (storedHash === currentPasswordHash || storedHash === oldPasswordHash) {
           const user: UserAccount = {
             id: String(row.id),
             email: String(row.email),
@@ -302,7 +393,7 @@ export async function loginUser({
     );
 
     if (matched) {
-      if (matched.passwordHash === passwordHash) {
+      if (matched.passwordHash === currentPasswordHash || matched.passwordHash === oldPasswordHash) {
         await saveSession(matched.user);
         return { user: matched.user };
       } else {
@@ -314,6 +405,46 @@ export async function loginUser({
   }
 
   return { error: 'No account found with that email or username.' };
+}
+
+export async function updateUserAvatar(userId: string, avatarPose: string): Promise<boolean> {
+  if (isTursoConfigured) {
+    try {
+      await initTursoTables();
+      await executeTurso({
+        sql: `UPDATE users SET avatar_pose = ? WHERE id = ?`,
+        args: [avatarPose, userId],
+      });
+    } catch (err) {
+      console.warn('Failed to update avatar in Turso:', err);
+    }
+  }
+
+  try {
+    const rawSession = await AsyncStorage.getItem(AUTH_SESSION_KEY);
+    if (rawSession) {
+      const user: UserAccount = JSON.parse(rawSession);
+      if (user.id === userId) {
+        user.avatarPose = avatarPose;
+        await AsyncStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(user));
+      }
+    }
+
+    const rawUsers = await AsyncStorage.getItem(USERS_LOCAL_STORAGE_KEY);
+    if (rawUsers) {
+      const usersMap = JSON.parse(rawUsers);
+      for (const key of Object.keys(usersMap)) {
+        if (usersMap[key]?.user?.id === userId) {
+          usersMap[key].user.avatarPose = avatarPose;
+        }
+      }
+      await AsyncStorage.setItem(USERS_LOCAL_STORAGE_KEY, JSON.stringify(usersMap));
+    }
+    return true;
+  } catch (err) {
+    console.error('Failed to update avatar locally:', err);
+    return false;
+  }
 }
 
 export async function saveOnboardingProfile({
@@ -404,11 +535,11 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
 export async function getUserProgress(userId: string): Promise<UserProgress> {
   const defaultProgress: UserProgress = {
     userId,
-    xp: 250,
-    streakCount: 7,
+    xp: 0,
+    streakCount: 1,
     lastActiveDate: new Date().toISOString().split('T')[0],
-    completedLessons: ['arrays-1', 'arrays-2'],
-    unlockedNodes: ['arrays-1', 'arrays-2', 'arrays-3'],
+    completedLessons: [],
+    unlockedNodes: ['two-sum'],
   };
 
   if (isTursoConfigured) {
@@ -421,8 +552,8 @@ export async function getUserProgress(userId: string): Promise<UserProgress> {
       });
       if (res.rows.length > 0) {
         const row = res.rows[0];
-        let lessons: string[] = ['arrays-1', 'arrays-2'];
-        let nodes: string[] = ['arrays-1', 'arrays-2', 'arrays-3'];
+        let lessons: string[] = [];
+        let nodes: string[] = ['two-sum'];
         try {
           const parsed = JSON.parse(String(row.completed_lessons || '[]'));
           if (Array.isArray(parsed)) lessons = parsed;
@@ -542,6 +673,29 @@ export async function recordLessonCompleted(
   return updatedProgress;
 }
 
+export function getTopicStats(
+  topicLessonIds: string[],
+  completedLessons: string[],
+  fallbackTotal = 0
+): {
+  completedCount: number;
+  totalCount: number;
+  percentage: number;
+  isCompleted: boolean;
+} {
+  const safeCompleted = Array.isArray(completedLessons) ? completedLessons : [];
+  const completedCount = topicLessonIds.filter((id) => safeCompleted.includes(id)).length;
+  const totalCount = Math.max(1, topicLessonIds.length || fallbackTotal);
+  const percentage = Math.min(1, completedCount / totalCount);
+
+  return {
+    completedCount,
+    totalCount,
+    percentage,
+    isCompleted: completedCount >= totalCount,
+  };
+}
+
 export interface LeaderboardRank {
   rank: number;
   userId: string;
@@ -555,7 +709,7 @@ export interface LeaderboardRank {
 }
 
 const DEFAULT_LEADERBOARD_SEED: LeaderboardRank[] = [
-  { rank: 1, userId: 'u_1', name: 'Priya Sharma', username: 'priya_code', xp: 2140, streak: 14, isUser: false, avatarPose: 'speedrun', badge: '🥇' },
+  { rank: 1, userId: 'u_1', name: 'Ameen Ansari', username: 'ameen_a', xp: 2140, streak: 14, isUser: false, avatarPose: 'speedrun', badge: '🥇' },
   { rank: 2, userId: 'u_2', name: 'Rohan Kumar', username: 'rohan_dev', xp: 1820, streak: 21, isUser: false, avatarPose: 'whisper', badge: '🥈' },
   { rank: 3, userId: 'u_3', name: 'David Lee', username: 'david_algo', xp: 1490, streak: 8, isUser: false, avatarPose: 'coding', badge: '🥉' },
   { rank: 4, userId: 'u_4', name: 'Sarah Chen', username: 'sarah_c', xp: 1110, streak: 12, isUser: false, avatarPose: 'eureka' },
