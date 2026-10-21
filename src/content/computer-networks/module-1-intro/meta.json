@@ -1,0 +1,12 @@
+{
+  "id": "cn-mod-1",
+  "number": "Module I",
+  "title": "Introduction To Computer Networks",
+  "subjectCode": "2165116",
+  "subjectName": "Computer Network",
+  "hours": 6,
+  "co": "CO1",
+  "summary": "Network architectures, OSI vs TCP/IP models, topologies, transmission media, and hardware devices.",
+  "description": "Comprehensive introduction to computer networking principles, architectural models (OSI and TCP/IP), network topologies, guided and unguided transmission media, client-server vs P2P architectures, and essential network hardware devices.",
+  "selfLearning": "Study of Campus-Wide Networking (3-tier hierarchical design, core/distribution/access layers, VLANs, and firewall DMZs)."
+}

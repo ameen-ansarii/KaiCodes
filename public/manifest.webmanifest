@@ -1,0 +1,22 @@
+{
+  "name": "KaiCode - Engineering Curriculum",
+  "short_name": "KaiCode",
+  "description": "Mumbai University Engineering Curriculum, Interactive Theory & Knowledge Gates",
+  "theme_color": "#0f172a",
+  "background_color": "#0f172a",
+  "display": "standalone",
+  "orientation": "any",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "/pwa-192x192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/pwa-512x512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
